@@ -22,9 +22,12 @@ import kotlin.coroutines.coroutineContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 import kotlin.random.Random
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 
 /**
- * InstaTask Bot Service - Automated Interaction for Instagram with Room Database & Gemini AI integration.
+ * InstaTask Bot Service - Robust Instagram Automation Engine
+ * Fixed Navigation Back, Story Re-click loop, Reel comment, and Reel loop bugs.
  */
 class BotService : AccessibilityService() {
 
@@ -57,6 +60,14 @@ class BotService : AccessibilityService() {
     private var statsStoriesReacted = 0
     private var statsProfilesSkipped = 0
     private var statsErrorsEncountered = 0
+
+    // Random comments array for Reels
+    private val reelComments = listOf(
+        "Banger track! 🎶🔥",
+        "Absolute vibe! 🙌🎧",
+        "Adding this to my playlist 🎵🔥",
+        "Super clean production! 🔊🔥"
+    )
 
     override fun onCreate() {
         super.onCreate()
@@ -138,7 +149,7 @@ class BotService : AccessibilityService() {
             clickNode(followersNode)
             randomDelay(3000, 5000)
             browseFollowers()
-            performGlobalAction(GLOBAL_ACTION_BACK)
+            safeGoBack()
             randomDelay(2000, 3000)
         } else {
             statsErrorsEncountered++
@@ -176,9 +187,9 @@ class BotService : AccessibilityService() {
         var interactionsCount = 0
         var scrollAttempts = 0
 
-        while (interactionsCount < 20 && scrollAttempts < 5 && coroutineContext.isActive) {
+        while (interactionsCount < 20 && scrollAttempts < 15 && coroutineContext.isActive) {
             if (isReelVisible()) {
-                performGlobalAction(GLOBAL_ACTION_BACK)
+                safeGoBack()
                 randomDelay(2000, 3000)
                 continue
             }
@@ -191,18 +202,40 @@ class BotService : AccessibilityService() {
                 continue
             }
 
+            val allVisibleAlreadyProcessed = withContext(Dispatchers.IO) {
+                nodes.all { node ->
+                    val name = node.text?.toString() ?: ""
+                    name.isNotEmpty() && database.botDao().isProfileProcessed(name)
+                }
+            }
+
+            if (allVisibleAlreadyProcessed) {
+                Log.d("InstaTaskBot", "Screen profiles already processed. Fast-scrolling...")
+                humanScroll()
+                randomDelay(1000, 1500)
+                scrollAttempts++
+                continue
+            }
+
             var foundNew = false
             for (node in nodes) {
                 if (!coroutineContext.isActive) break
                 val name = node.text?.toString() ?: continue
 
-                // 1. Room Database Duplicate Check
                 val isAlreadyProcessed = withContext(Dispatchers.IO) {
                     database.botDao().isProfileProcessed(name)
                 }
 
                 if (isAlreadyProcessed) {
                     Log.d("InstaTaskBot", "Skipping $name - Already saved in Room DB")
+                    continue
+                }
+
+                if (Random.nextFloat() < 0.10f) {
+                    Log.d("InstaTaskBot", "Humanizer: Skipping $name")
+                    statsProfilesSkipped++
+                    saveProcessedProfileToRoom(name, "SKIPPED_HUMANIZER")
+                    sendStatsUpdate()
                     continue
                 }
 
@@ -217,8 +250,11 @@ class BotService : AccessibilityService() {
                 randomDelay(3000, 5000)
 
                 if (isProfileViewVisible()) {
-                    if (isPublicProfile() && hasPosts()) {
-                        Log.d("InstaTaskBot", "Public Profile. Interacting...")
+                    val bioText = getBioText()
+                    val isMaleOrDJ = isMaleOrDJProfile(name, bioText)
+
+                    if (isPublicProfile() && hasPosts() && isMaleOrDJ) {
+                        Log.d("InstaTaskBot", "Matching Profile ($name). Interacting...")
                         statsMatchesFound++
                         sendStatsUpdate()
 
@@ -228,16 +264,19 @@ class BotService : AccessibilityService() {
                         interactionsCount++
                         randomDelay(3000, 5000)
                     } else {
-                        Log.d("InstaTaskBot", "Skipping (Private or empty profile)")
+                        val reason = if (!isMaleOrDJ) "Non-male / Non-DJ profile" else "Private or zero posts"
+                        Log.d("InstaTaskBot", "Skipping $name - Reason: $reason")
                         statsProfilesSkipped++
-                        saveProcessedProfileToRoom(name, "SKIPPED_PRIVATE_OR_EMPTY")
-                        logActionToRoom(name, "SKIPPED", "Private or zero posts", false)
+                        saveProcessedProfileToRoom(name, "SKIPPED_FILTER")
+                        logActionToRoom(name, "SKIPPED", reason, false)
                         sendStatsUpdate()
                     }
-                    performGlobalAction(GLOBAL_ACTION_BACK)
+
+                    // Profile se wapis followers list par aana
+                    safeGoBack()
                     randomDelay(1500, 2500)
                 } else if (isReelVisible()) {
-                    performGlobalAction(GLOBAL_ACTION_BACK)
+                    safeGoBack()
                     randomDelay(1500, 2500)
                 }
                 if (interactionsCount >= 20) break
@@ -254,90 +293,156 @@ class BotService : AccessibilityService() {
     private suspend fun performInteractions(username: String) {
         currentState = BotState.INTERACTING
 
-        // 1. Like Post - Search for grid elements
-        val postIds = listOf(
-            "com.instagram.android:id/image_button",
-            "com.instagram.android:id/media_set_row_content_container",
-            "com.instagram.android:id/row_profile_header_container"
-        )
+        // 1. 24-HOUR LIKES LIMIT CHECK
+        val twentyFourHoursAgo = System.currentTimeMillis() - (24 * 60 * 60 * 1000L)
+        val recentLikesCount = withContext(Dispatchers.IO) {
+            database.botDao().getLikesCountSince(twentyFourHoursAgo)
+        }
 
+        if (recentLikesCount >= 150) {
+            Log.d("InstaTaskBot", "24-Hour Limit hit ($recentLikesCount/150). Pausing bot.")
+            logActionToRoom(username, "LIMIT_REACHED", "Hit 150 likes limit in 24h", false)
+            stopBot()
+            return
+        }
+
+        // 2. POST / REEL INTERACTION
         var postOpened = false
-        for (id in postIds) {
-            val posts = findNodesByViewId(id)
-            if (posts.isNotEmpty()) {
-                Log.d("InstaTaskBot", "Opening first post...")
-                clickNode(posts[0])
-                randomDelay(3000, 5000)
+        val gridNodes = findPostGridItems()
 
-                if (findLikeButton() != null || findNodeByContentDescription("Comment") != null || findNodeByContentDescription("Kommentieren") != null) {
-                    postOpened = true
-                    break
-                } else {
-                    Log.d("InstaTaskBot", "Click on post grid failed.")
-                    performGlobalAction(GLOBAL_ACTION_BACK)
-                    randomDelay(1000, 2000)
-                }
+        if (gridNodes.isNotEmpty()) {
+            Log.d("InstaTaskBot", "Opening post/reel from grid...")
+            clickNode(gridNodes[0])
+            randomDelay(3000, 4500)
+
+            if (isContentOpened()) {
+                postOpened = true
+            } else {
+                Log.d("InstaTaskBot", "Grid click missed. Pressing back...")
+                safeGoBack()
+                randomDelay(1500, 2000)
             }
         }
 
         if (postOpened) {
             if (isReelVisible()) {
-                Log.d("InstaTaskBot", "Reel detected. Commenting...")
+                Log.d("InstaTaskBot", "Reel screen active. Commenting and Liking...")
                 commentOnReel(username)
-                val like = findLikeButton()
-                if (like != null) {
-                    clickNode(like)
-                    Log.d("InstaTaskBot", "Reel liked!")
+                val likeBtn = findLikeButton()
+                if (likeBtn != null) {
+                    clickNode(likeBtn)
                     statsLikesGiven++
-                    logActionToRoom(username, "REEL_LIKED", "Reel liked successfully", true)
+                    logActionToRoom(username, "REEL_LIKED", "Reel liked", true)
                     sendStatsUpdate()
                 }
             } else {
-                val like = findLikeButton()
-                if (like != null) {
-                    clickNode(like)
-                    Log.d("InstaTaskBot", ">>> SUCCESS: Post liked! <<<")
+                Log.d("InstaTaskBot", "Standard Post active. Liking...")
+                val likeBtn = findLikeButton()
+                if (likeBtn != null) {
+                    clickNode(likeBtn)
+                    Log.d("InstaTaskBot", ">>> SUCCESS: Post Liked! <<<")
                     statsLikesGiven++
                     logActionToRoom(username, "POST_LIKED", "Post liked successfully", true)
                     sendStatsUpdate()
                     randomDelay(1500, 2500)
-                } else {
-                    Log.d("InstaTaskBot", "Like button not found.")
                 }
             }
-            performGlobalAction(GLOBAL_ACTION_BACK)
+
+            Log.d("InstaTaskBot", "Exiting Post/Reel view...")
+            safeGoBack()
             randomDelay(2000, 3000)
-        } else {
-            Log.d("InstaTaskBot", "No posts found to like.")
         }
 
-        // 2. Story Reaction
-        val avatar = findNodesByViewId("com.instagram.android:id/profile_header_avatar_container").firstOrNull()
-            ?: findNodesByViewId("com.instagram.android:id/row_profile_header_imageview").firstOrNull()
+        // 3. STORY REACTION EXECUTION (FIXED LOOP ISSUE)
+        if (isProfileViewVisible()) {
+            val avatar = findNodesByViewId("com.instagram.android:id/profile_header_avatar_container").firstOrNull()
+                ?: findNodesByViewId("com.instagram.android:id/row_profile_header_imageview").firstOrNull()
 
-        if (avatar != null) {
-            Log.d("InstaTaskBot", "Attempting to open story...")
-            clickNode(avatar)
-            randomDelay(3000, 5000)
+            if (avatar != null) {
+                Log.d("InstaTaskBot", "Checking user story...")
+                clickNode(avatar)
+                randomDelay(2500, 3500)
 
-            if (isProfileViewVisible()) {
-                Log.d("InstaTaskBot", "No story available or click failed.")
-            } else {
-                val fire = findNodeByText("🔥") ?: findNodeByContentDescription("🔥")
-                if (fire != null) {
-                    clickNode(fire)
-                    Log.d("InstaTaskBot", "Story reaction sent!")
-                    statsStoriesReacted++
-                    logActionToRoom(username, "STORY_REACTION", "Sent fire emoji to story", true)
-                    sendStatsUpdate()
-                    randomDelay(1000, 2000)
+                // Check if story actually opened (Profile visible na ho)
+                if (!isProfileViewVisible()) {
+                    val fire = findNodeByText("🔥") ?: findNodeByContentDescription("🔥")
+                    if (fire != null) {
+                        clickNode(fire)
+                        Log.d("InstaTaskBot", "Story reaction sent!")
+                        statsStoriesReacted++
+                        logActionToRoom(username, "STORY_REACTION", "Sent fire emoji", true)
+                        sendStatsUpdate()
+                        randomDelay(1500, 2000)
+                    }
+
+                    // Story close karne ke liye safe exit
+                    safeGoBack()
+                    randomDelay(2000, 2500)
                 } else {
-                    Log.d("InstaTaskBot", "No emoji reaction found in story.")
+                    Log.d("InstaTaskBot", "No story active.")
                 }
-                performGlobalAction(GLOBAL_ACTION_BACK)
-                randomDelay(2000, 3000)
             }
         }
+
+        // Fallback: Agar profile screen par wapis na pohncha ho
+        if (!isProfileViewVisible()) {
+            safeGoBack()
+            randomDelay(1500, 2000)
+        }
+    }
+
+    private fun isMaleOrDJProfile(username: String, bio: String): Boolean {
+        val djKeywords = listOf(
+            "dj", "producer", "music", "remix", "beatmaker", "sound", "artist",
+            "house", "techno", "edm", "label", "track", "records", "audio"
+        )
+        val femaleKeywords = listOf(
+            "female", "girl", "woman", "mom", "she/her", "queen", "model",
+            "makeup", "beauty", "fashionista", "lady", "wife", "sister"
+        )
+
+        val combinedText = "$username $bio".lowercase()
+
+        if (femaleKeywords.any { combinedText.contains(it) }) return false
+        if (djKeywords.any { combinedText.contains(it) }) return true
+        return true
+    }
+
+    private fun findPostGridItems(): List<AccessibilityNodeInfo> {
+        val ids = listOf(
+            "com.instagram.android:id/image_button",
+            "com.instagram.android:id/media_set_row_content_container",
+            "com.instagram.android:id/row_profile_header_container",
+            "com.instagram.android:id/view_coauthor_single_image"
+        )
+        for (id in ids) {
+            val nodes = findNodesByViewId(id)
+            if (nodes.isNotEmpty()) return nodes
+        }
+
+        val root = rootInActiveWindow ?: return emptyList()
+        val list = mutableListOf<AccessibilityNodeInfo>()
+        val queue = mutableListOf(root)
+        while (queue.isNotEmpty()) {
+            val node = queue.removeAt(0)
+            if (node.className == "android.widget.ImageView" && node.isClickable) {
+                val desc = node.contentDescription?.toString() ?: ""
+                if (!desc.contains("profile", true) && !desc.contains("avatar", true)) {
+                    list.add(node)
+                }
+            }
+            for (i in 0 until node.childCount) {
+                node.getChild(i)?.let { queue.add(it) }
+            }
+        }
+        return list
+    }
+
+    private fun isContentOpened(): Boolean {
+        return findLikeButton() != null ||
+                findNodeByContentDescription("Comment") != null ||
+                findNodeByContentDescription("Kommentieren") != null ||
+                isReelVisible()
     }
 
     private fun findLikeButton(): AccessibilityNodeInfo? {
@@ -346,9 +451,12 @@ class BotService : AccessibilityService() {
         while (queue.isNotEmpty()) {
             val node = queue.removeAt(0)
             val desc = node.contentDescription?.toString() ?: ""
-            if (desc.contains("Like", true) || desc.contains("Gefällt mir", true)) {
-                if (node.isClickable || (node.parent?.isClickable == true)) return node
+
+            if ((desc.equals("Like", true) || desc.equals("Gefällt mir", true) || desc.startsWith("Like", true)) &&
+                !desc.contains("Liked", true)) {
+                return if (node.isClickable) node else node.parent
             }
+
             val ids = listOf(
                 "com.instagram.android:id/row_feed_button_like",
                 "com.instagram.android:id/like_button",
@@ -363,13 +471,14 @@ class BotService : AccessibilityService() {
         return null
     }
 
+    // 🟢 REEL COMMENT AUTOMATION (FIXED COMMENTING & FOCUS ISSUE)
     private suspend fun commentOnReel(username: String) {
         val commentBtn = findNodeByContentDescription("Comment")
             ?: findNodeByContentDescription("Kommentieren")
             ?: findNodesByViewId("com.instagram.android:id/comment_button").firstOrNull()
 
         if (commentBtn != null) {
-            Log.d("InstaTaskBot", "Clicking comment button...")
+            Log.d("InstaTaskBot", "Opening Reel comment section...")
             clickNode(commentBtn)
             randomDelay(3000, 4000)
 
@@ -390,12 +499,18 @@ class BotService : AccessibilityService() {
             }
 
             if (input != null) {
-                input.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-                randomDelay(1000, 2000)
+                // Input area ko tap karna zaroori hai taake keyboard Focus enable ho sakay
+                clickNode(input)
+                randomDelay(1000, 1500)
 
-                val text = if (Random.nextBoolean()) "🔥🔥🔥" else "lets go!"
-                val arguments = Bundle()
-                arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+                input.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+                randomDelay(800, 1200)
+
+                // Pick a dynamic comment from the list
+                val commentText = reelComments.random()
+                val arguments = Bundle().apply {
+                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, commentText)
+                }
 
                 input.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
                 randomDelay(2000, 3000)
@@ -408,17 +523,24 @@ class BotService : AccessibilityService() {
                 if (postBtn != null) {
                     clickNode(postBtn)
                     statsCommentsSent++
-                    logActionToRoom(username, "COMMENT_SENT", "Commented: $text", true)
+                    logActionToRoom(username, "COMMENT_SENT", "Commented: $commentText", true)
                     sendStatsUpdate()
                     randomDelay(2000, 3000)
                 }
             }
-            performGlobalAction(GLOBAL_ACTION_BACK)
-            randomDelay(2000, 3000)
+
+            // Comment sheet close karne ke liye back
+            safeGoBack()
+            randomDelay(1500, 2500)
         }
     }
 
-    // Room Database Operations
+    // 🟢 SAFE BACK ACTION (Stuck Navigation Fix)
+    private suspend fun safeGoBack() {
+        performGlobalAction(GLOBAL_ACTION_BACK)
+        randomDelay(800, 1200)
+    }
+
     private suspend fun saveProcessedProfileToRoom(username: String, action: String) {
         withContext(Dispatchers.IO) {
             database.botDao().insertProcessedProfile(
@@ -448,7 +570,6 @@ class BotService : AccessibilityService() {
         }
     }
 
-    // Full Stats Broadcast sync with MainActivity keys
     private fun sendStatsUpdate() {
         val intent = Intent("com.dopamin.instatask.STATS_UPDATE").apply {
             putExtra("CURRENT_SOURCE", currentSourceProfile)
