@@ -3,7 +3,9 @@ import java.io.FileInputStream
 
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.compose.compiler)
+    alias(libs.plugins.ksp)
 }
 
 val localProperties = Properties().apply {
@@ -15,7 +17,7 @@ val localProperties = Properties().apply {
 
 android {
     namespace = "com.dopamin.instatask"
-    compileSdk = 36
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.dopamin.instatask"
@@ -45,6 +47,9 @@ android {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
+    kotlinOptions {
+        jvmTarget = "11"
+    }
     buildFeatures {
         compose = true
         buildConfig = true
@@ -62,10 +67,10 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
 
-    // Google Gemini AI SDK für Android
+    // Google Gemini AI SDK
     implementation("com.google.ai.client.generativeai:generativeai:0.9.0")
-    
-    // AppCompat
+
+    // AppCompat & UI
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation(libs.material)
     implementation(libs.androidx.activity)
@@ -78,4 +83,9 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
+
+    // Room Database
+    implementation(libs.room.runtime)
+    implementation(libs.room.ktx)
+    ksp(libs.room.compiler)
 }

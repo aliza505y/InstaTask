@@ -8,28 +8,32 @@ import android.graphics.Path
 import android.graphics.Rect
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
+import android.os.PowerManager
 import android.util.Log
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-import com.google.ai.client.generativeai.GenerativeModel
-import com.google.ai.client.generativeai.type.content
 import android.widget.Toast
-import android.os.PowerManager
+import com.google.ai.client.generativeai.GenerativeModel
 import kotlinx.coroutines.*
 import java.util.concurrent.Executors
 import kotlin.coroutines.coroutineContext
+import kotlin.coroutines.resume
+import kotlin.coroutines.suspendCoroutine
 import kotlin.random.Random
 
 /**
- * InstaTask Bot Service - Automated Interaction for Instagram.
+ * InstaTask Bot Service - Automated Interaction for Instagram with Room Database & Gemini AI integration.
  */
 class BotService : AccessibilityService() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var botJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
-    private val likedProfiles = mutableSetOf<String>()
+
+    // Room Database Instance
+    private lateinit var database: AppDatabase
 
     private val targetProfiles = listOf(
         "houseworksrec", "loudkult", "sirupmusic", "tomorrowland_music", "kontorrecords"
@@ -43,10 +47,21 @@ class BotService : AccessibilityService() {
     private enum class BotState { IDLE, NAVIGATING, BROWSING_FOLLOWERS, ANALYZING_PROFILE, INTERACTING }
     private var currentState = BotState.IDLE
 
+    // Live Tracker Metrics
+    private var currentSourceProfile = "None"
+    private var currentTargetProfile = "None"
     private var statsProfilesScanned = 0
     private var statsMatchesFound = 0
     private var statsLikesGiven = 0
+    private var statsCommentsSent = 0
     private var statsStoriesReacted = 0
+    private var statsProfilesSkipped = 0
+    private var statsErrorsEncountered = 0
+
+    override fun onCreate() {
+        super.onCreate()
+        database = AppDatabase.getDatabase(this)
+    }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
 
@@ -74,11 +89,17 @@ class BotService : AccessibilityService() {
             Log.d("InstaTaskBot", "Workflow started...")
             for (profile in targetProfiles) {
                 if (!coroutineContext.isActive) break
+                currentSourceProfile = profile
+                sendStatsUpdate()
+
                 try {
                     processTargetProfile(profile)
                     randomDelay(8000, 15000)
                 } catch (e: Exception) {
+                    statsErrorsEncountered++
                     Log.e("InstaTaskBot", "Error processing $profile: ${e.localizedMessage}")
+                    logActionToRoom(profile, "ERROR", e.localizedMessage ?: "Unknown Exception", false)
+                    sendStatsUpdate()
                 }
             }
             Log.d("InstaTaskBot", "Workflow finished.")
@@ -91,6 +112,9 @@ class BotService : AccessibilityService() {
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
         currentState = BotState.IDLE
+        currentSourceProfile = "None"
+        currentTargetProfile = "None"
+        sendStatsUpdate()
     }
 
     private suspend fun processTargetProfile(username: String) {
@@ -116,6 +140,10 @@ class BotService : AccessibilityService() {
             browseFollowers()
             performGlobalAction(GLOBAL_ACTION_BACK)
             randomDelay(2000, 3000)
+        } else {
+            statsErrorsEncountered++
+            logActionToRoom(username, "SOURCE_ERROR", "Follower button not found", false)
+            sendStatsUpdate()
         }
     }
 
@@ -145,7 +173,6 @@ class BotService : AccessibilityService() {
 
     private suspend fun browseFollowers() {
         currentState = BotState.BROWSING_FOLLOWERS
-        val processed = mutableSetOf<String>()
         var interactionsCount = 0
         var scrollAttempts = 0
 
@@ -168,11 +195,20 @@ class BotService : AccessibilityService() {
             for (node in nodes) {
                 if (!coroutineContext.isActive) break
                 val name = node.text?.toString() ?: continue
-                if (processed.contains(name) || likedProfiles.contains(name)) continue
 
-                processed.add(name)
+                // 1. Room Database Duplicate Check
+                val isAlreadyProcessed = withContext(Dispatchers.IO) {
+                    database.botDao().isProfileProcessed(name)
+                }
+
+                if (isAlreadyProcessed) {
+                    Log.d("InstaTaskBot", "Skipping $name - Already saved in Room DB")
+                    continue
+                }
+
                 foundNew = true
                 scrollAttempts = 0
+                currentTargetProfile = name
                 statsProfilesScanned++
                 sendStatsUpdate()
 
@@ -185,11 +221,18 @@ class BotService : AccessibilityService() {
                         Log.d("InstaTaskBot", "Public Profile. Interacting...")
                         statsMatchesFound++
                         sendStatsUpdate()
+
                         performInteractions(name)
+                        saveProcessedProfileToRoom(name, "INTERACTED")
+
                         interactionsCount++
                         randomDelay(3000, 5000)
                     } else {
                         Log.d("InstaTaskBot", "Skipping (Private or empty profile)")
+                        statsProfilesSkipped++
+                        saveProcessedProfileToRoom(name, "SKIPPED_PRIVATE_OR_EMPTY")
+                        logActionToRoom(name, "SKIPPED", "Private or zero posts", false)
+                        sendStatsUpdate()
                     }
                     performGlobalAction(GLOBAL_ACTION_BACK)
                     randomDelay(1500, 2500)
@@ -226,12 +269,11 @@ class BotService : AccessibilityService() {
                 clickNode(posts[0])
                 randomDelay(3000, 5000)
 
-                // Check if a post is genuinely open (e.g., Like button or Comment field is visible)
                 if (findLikeButton() != null || findNodeByContentDescription("Comment") != null || findNodeByContentDescription("Kommentieren") != null) {
                     postOpened = true
                     break
                 } else {
-                    Log.d("InstaTaskBot", "Click on post grid failed (no post opened).")
+                    Log.d("InstaTaskBot", "Click on post grid failed.")
                     performGlobalAction(GLOBAL_ACTION_BACK)
                     randomDelay(1000, 2000)
                 }
@@ -241,13 +283,13 @@ class BotService : AccessibilityService() {
         if (postOpened) {
             if (isReelVisible()) {
                 Log.d("InstaTaskBot", "Reel detected. Commenting...")
-                commentOnReel()
-                // Additionally like if possible
+                commentOnReel(username)
                 val like = findLikeButton()
                 if (like != null) {
                     clickNode(like)
                     Log.d("InstaTaskBot", "Reel liked!")
                     statsLikesGiven++
+                    logActionToRoom(username, "REEL_LIKED", "Reel liked successfully", true)
                     sendStatsUpdate()
                 }
             } else {
@@ -256,21 +298,20 @@ class BotService : AccessibilityService() {
                     clickNode(like)
                     Log.d("InstaTaskBot", ">>> SUCCESS: Post liked! <<<")
                     statsLikesGiven++
+                    logActionToRoom(username, "POST_LIKED", "Post liked successfully", true)
                     sendStatsUpdate()
                     randomDelay(1500, 2500)
                 } else {
                     Log.d("InstaTaskBot", "Like button not found.")
                 }
             }
-            likedProfiles.add(username)
             performGlobalAction(GLOBAL_ACTION_BACK)
             randomDelay(2000, 3000)
         } else {
             Log.d("InstaTaskBot", "No posts found to like.")
         }
 
-        // 2. Story Reaction - Only if story is available
-        // Instagram marks active stories with specific content description or avatar ID
+        // 2. Story Reaction
         val avatar = findNodesByViewId("com.instagram.android:id/profile_header_avatar_container").firstOrNull()
             ?: findNodesByViewId("com.instagram.android:id/row_profile_header_imageview").firstOrNull()
 
@@ -279,7 +320,6 @@ class BotService : AccessibilityService() {
             clickNode(avatar)
             randomDelay(3000, 5000)
 
-            // If we are still on the profile, no story was opened
             if (isProfileViewVisible()) {
                 Log.d("InstaTaskBot", "No story available or click failed.")
             } else {
@@ -288,12 +328,12 @@ class BotService : AccessibilityService() {
                     clickNode(fire)
                     Log.d("InstaTaskBot", "Story reaction sent!")
                     statsStoriesReacted++
+                    logActionToRoom(username, "STORY_REACTION", "Sent fire emoji to story", true)
                     sendStatsUpdate()
                     randomDelay(1000, 2000)
                 } else {
                     Log.d("InstaTaskBot", "No emoji reaction found in story.")
                 }
-                // Return to profile
                 performGlobalAction(GLOBAL_ACTION_BACK)
                 randomDelay(2000, 3000)
             }
@@ -309,7 +349,6 @@ class BotService : AccessibilityService() {
             if (desc.contains("Like", true) || desc.contains("Gefällt mir", true)) {
                 if (node.isClickable || (node.parent?.isClickable == true)) return node
             }
-            // Reels Like button ID or Feed Like button ID
             val ids = listOf(
                 "com.instagram.android:id/row_feed_button_like",
                 "com.instagram.android:id/like_button",
@@ -324,7 +363,7 @@ class BotService : AccessibilityService() {
         return null
     }
 
-    private suspend fun commentOnReel() {
+    private suspend fun commentOnReel(username: String) {
         val commentBtn = findNodeByContentDescription("Comment")
             ?: findNodeByContentDescription("Kommentieren")
             ?: findNodesByViewId("com.instagram.android:id/comment_button").firstOrNull()
@@ -347,26 +386,18 @@ class BotService : AccessibilityService() {
             }
 
             if (input == null) {
-                // Fallback attempt: Search by EditText class
                 input = findNodeByClass("android.widget.EditText")
             }
 
             if (input != null) {
-                Log.d("InstaTaskBot", "Comment input field found. Focusing...")
                 input.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
                 randomDelay(1000, 2000)
 
                 val text = if (Random.nextBoolean()) "🔥🔥🔥" else "lets go!"
-                val arguments = android.os.Bundle()
+                val arguments = Bundle()
                 arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
 
-                Log.d("InstaTaskBot", "Setting text: $text")
-                val success = input.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
-
-                if (!success) {
-                    Log.w("InstaTaskBot", "ACTION_SET_TEXT failed. Trying directly...")
-                }
-
+                input.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
                 randomDelay(2000, 3000)
 
                 val postBtn = findNodeByText("Post")
@@ -375,20 +406,62 @@ class BotService : AccessibilityService() {
                     ?: findNodesByViewId("com.instagram.android:id/comment_post_button").firstOrNull()
 
                 if (postBtn != null) {
-                    Log.d("InstaTaskBot", "Clicking 'Post'...")
                     clickNode(postBtn)
-                    Log.d("InstaTaskBot", "Reel commented: $text")
+                    statsCommentsSent++
+                    logActionToRoom(username, "COMMENT_SENT", "Commented: $text", true)
+                    sendStatsUpdate()
                     randomDelay(2000, 3000)
-                } else {
-                    Log.w("InstaTaskBot", "'Post' button not found.")
                 }
-            } else {
-                Log.w("InstaTaskBot", "No comment input field found.")
             }
-            // Back to Reel viewer
             performGlobalAction(GLOBAL_ACTION_BACK)
             randomDelay(2000, 3000)
         }
+    }
+
+    // Room Database Operations
+    private suspend fun saveProcessedProfileToRoom(username: String, action: String) {
+        withContext(Dispatchers.IO) {
+            database.botDao().insertProcessedProfile(
+                ProcessedProfile(
+                    username = username,
+                    sourceProfile = currentSourceProfile,
+                    actionTaken = action,
+                    timestamp = System.currentTimeMillis()
+                )
+            )
+        }
+    }
+
+    private suspend fun logActionToRoom(target: String, actionType: String, details: String, isSuccess: Boolean) {
+        withContext(Dispatchers.IO) {
+            database.botDao().insertLog(
+                AutomationLog(
+                    id = 0,
+                    sourceProfile = currentSourceProfile,
+                    targetUsername = target,
+                    actionType = actionType,
+                    details = details,
+                    isSuccess = isSuccess,
+                    timestamp = System.currentTimeMillis()
+                )
+            )
+        }
+    }
+
+    // Full Stats Broadcast sync with MainActivity keys
+    private fun sendStatsUpdate() {
+        val intent = Intent("com.dopamin.instatask.STATS_UPDATE").apply {
+            putExtra("CURRENT_SOURCE", currentSourceProfile)
+            putExtra("CURRENT_TARGET", currentTargetProfile)
+            putExtra("PROFILES_SCANNED", statsProfilesScanned)
+            putExtra("MATCHES_FOUND", statsMatchesFound)
+            putExtra("LIKES_GIVEN", statsLikesGiven)
+            putExtra("COMMENTS_SENT", statsCommentsSent)
+            putExtra("STORIES_REACTED", statsStoriesReacted)
+            putExtra("PROFILES_SKIPPED", statsProfilesSkipped)
+            putExtra("ERRORS", statsErrorsEncountered)
+        }
+        sendBroadcast(intent)
     }
 
     private fun findNodeByClass(className: String): AccessibilityNodeInfo? {
@@ -402,16 +475,6 @@ class BotService : AccessibilityService() {
             }
         }
         return null
-    }
-
-    private fun sendStatsUpdate() {
-        val intent = Intent("com.dopamin.instatask.STATS_UPDATE").apply {
-            putExtra("PROFILES", statsProfilesScanned)
-            putExtra("MATCHES", statsMatchesFound)
-            putExtra("LIKES", statsLikesGiven)
-            putExtra("STORIES", statsStoriesReacted)
-        }
-        sendBroadcast(intent)
     }
 
     private suspend fun randomDelay(min: Long, max: Long) {
@@ -446,10 +509,10 @@ class BotService : AccessibilityService() {
     private fun findNodeByContentDescription(d: String): AccessibilityNodeInfo? {
         val root = rootInActiveWindow ?: return null
         val q = mutableListOf(root)
-        while(q.isNotEmpty()){
+        while (q.isNotEmpty()) {
             val n = q.removeAt(0)
-            if(n.contentDescription?.toString()?.contains(d, true) == true) return n
-            for(i in 0 until n.childCount) n.getChild(i)?.let { q.add(it) }
+            if (n.contentDescription?.toString()?.contains(d, true) == true) return n
+            for (i in 0 until n.childCount) n.getChild(i)?.let { q.add(it) }
         }
         return null
     }
@@ -470,10 +533,12 @@ class BotService : AccessibilityService() {
             takeScreenshot(Display.DEFAULT_DISPLAY, Executors.newSingleThreadExecutor(), object : TakeScreenshotCallback {
                 override fun onSuccess(res: ScreenshotResult) {
                     val bm = Bitmap.wrapHardwareBuffer(res.hardwareBuffer, res.colorSpace)?.copy(Bitmap.Config.ARGB_8888, false)
-                    cont.resume(bm) {}
+                    cont.resume(bm)
                 }
-                override fun onFailure(err: Int) = cont.resume(null) {}
+                override fun onFailure(err: Int) {
+                    cont.resume(null)
+                }
             })
-        } else cont.resume(null) {}
+        } else cont.resume(null)
     }
 }

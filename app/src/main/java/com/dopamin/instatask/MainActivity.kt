@@ -1,7 +1,10 @@
 package com.dopamin.instatask
 
+import android.annotation.SuppressLint
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Bundle
 import android.provider.Settings
 import android.text.TextUtils
@@ -9,6 +12,11 @@ import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : AppCompatActivity() {
 
@@ -16,17 +24,29 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnStopBot: Button
     private lateinit var btnAccessibility: Button
     private lateinit var tvStatus: TextView
+    private lateinit var tvCurrentActivity: TextView
     private lateinit var tvStats: TextView
 
-    private val statsReceiver = object : android.content.BroadcastReceiver() {
+    private lateinit var database: AppDatabase
+
+    private val statsReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == "com.dopamin.instatask.STATS_UPDATE") {
-                val profiles = intent.getIntExtra("PROFILES", 0)
-                val matches = intent.getIntExtra("MATCHES", 0)
-                val likes = intent.getIntExtra("LIKES", 0)
-                val stories = intent.getIntExtra("STORIES", 0)
+                val currentSource = intent.getStringExtra("CURRENT_SOURCE") ?: "None"
+                val currentTarget = intent.getStringExtra("CURRENT_TARGET") ?: "None"
 
-                tvStats.text = "Statistics:\n- Profiles Scanned: $profiles\n- Matches Found: $matches\n- Likes Distributed: $likes\n- Stories Reacted: $stories"
+                val scanned = intent.getIntExtra("PROFILES_SCANNED", 0)
+                val matches = intent.getIntExtra("MATCHES_FOUND", 0)
+                val likes = intent.getIntExtra("LIKES_GIVEN", 0)
+                val comments = intent.getIntExtra("COMMENTS_SENT", 0)
+                val stories = intent.getIntExtra("STORIES_REACTED", 0)
+                val skipped = intent.getIntExtra("PROFILES_SKIPPED", 0)
+                val errors = intent.getIntExtra("ERRORS", 0)
+
+                // Updating UI Live Activity & Single TextView Stats
+                tvCurrentActivity.text = "Current Source: $currentSource\nCurrent Target: $currentTarget"
+
+                updateStatsTextView(scanned, matches, likes, comments, stories, skipped, errors)
             }
         }
     }
@@ -36,73 +56,90 @@ class MainActivity : AppCompatActivity() {
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(R.layout.activity_main)
 
-        // Initialize UI Elements
+        database = AppDatabase.getDatabase(this)
+
         btnStartBot = findViewById(R.id.btnStartBot)
         btnStopBot = findViewById(R.id.btnStopBot)
         btnAccessibility = findViewById(R.id.btnAccessibility)
         tvStatus = findViewById(R.id.tvStatus)
+        tvCurrentActivity = findViewById(R.id.tvCurrentActivity)
         tvStats = findViewById(R.id.tvStats)
 
-        // Listener for "Enable Accessibility Service" button
         btnAccessibility.setOnClickListener {
-            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-            startActivity(intent)
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
 
-        // Listener for "Start Bot" button
         btnStartBot.setOnClickListener {
             if (isAccessibilityServiceEnabled(this, BotService::class.java)) {
-                val intent = Intent(this, BotService::class.java).apply {
-                    action = "START_BOT"
-                }
-                startService(intent)
+                startBotService("START_BOT")
                 tvStatus.text = "Status: Bot running..."
                 Toast.makeText(this, "Bot started", Toast.LENGTH_SHORT).show()
             } else {
-                Toast.makeText(
-                    this,
-                    "Please enable the Accessibility Service first!",
-                    Toast.LENGTH_LONG
-                ).show()
+                Toast.makeText(this, "Please enable Accessibility Service first!", Toast.LENGTH_LONG).show()
             }
         }
 
-        // Listener for "Stop Bot" button
         btnStopBot.setOnClickListener {
-            val intent = Intent(this, BotService::class.java).apply {
-                action = "STOP_BOT"
-            }
-            startService(intent)
+            startBotService("STOP_BOT")
             tvStatus.text = "Status: Stopped"
             Toast.makeText(this, "Bot stopped", Toast.LENGTH_SHORT).show()
         }
 
-        // AUTO-START: If service is already active, start bot immediately
-        if (isAccessibilityServiceEnabled(this, BotService::class.java)) {
-            tvStatus.postDelayed({
-                startBotWorkflow()
-            }, 1000)
+        // App launch par Room DB se historical count read karke screen par dikhana
+        loadStatsFromDatabase()
+    }
+
+    private fun startBotService(actionString: String) {
+        val intent = Intent(this, BotService::class.java).apply {
+            action = actionString
+        }
+        startService(intent)
+    }
+
+    private fun loadStatsFromDatabase() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val totalProcessed = database.botDao().getProcessedCount()
+            withContext(Dispatchers.Main) {
+                // Initial load from Room Database
+                updateStatsTextView(
+                    scanned = totalProcessed,
+                    matches = 0,
+                    likes = 0,
+                    comments = 0,
+                    stories = 0,
+                    skipped = 0,
+                    errors = 0
+                )
+            }
         }
     }
 
-    private fun startBotWorkflow() {
-        val intent = Intent(this, BotService::class.java).apply {
-            action = "START_BOT"
-        }
-        startService(intent)
-        tvStatus.text = "Status: Bot running (Auto-Start)..."
-        Toast.makeText(this, "Bot automatically started", Toast.LENGTH_SHORT).show()
+    @SuppressLint("SetTextI18n")
+    private fun updateStatsTextView(
+        scanned: Int, matches: Int, likes: Int,
+        comments: Int, stories: Int, skipped: Int, errors: Int
+    ) {
+        tvStats.text = """
+            Statistics:
+            - Profiles Scanned: $scanned
+            - Matches Found: $matches
+            - Likes Distributed: $likes
+            - Comments Sent: $comments
+            - Stories Reacted: $stories
+            - Profiles Skipped: $skipped
+            - Errors Encountered: $errors
+        """.trimIndent()
     }
 
     override fun onResume() {
         super.onResume()
-        androidx.core.content.ContextCompat.registerReceiver(
+        ContextCompat.registerReceiver(
             this,
             statsReceiver,
-            android.content.IntentFilter("com.dopamin.instatask.STATS_UPDATE"),
-            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
+            IntentFilter("com.dopamin.instatask.STATS_UPDATE"),
+            ContextCompat.RECEIVER_NOT_EXPORTED
         )
-        // Check if the accessibility service is enabled and update status text
+
         if (isAccessibilityServiceEnabled(this, BotService::class.java)) {
             tvStatus.text = "Status: Ready (Service active)"
         } else {
@@ -115,7 +152,6 @@ class MainActivity : AppCompatActivity() {
         unregisterReceiver(statsReceiver)
     }
 
-    // Helper function to check if Accessibility Service is enabled
     private fun isAccessibilityServiceEnabled(context: Context, service: Class<*>): Boolean {
         val expectedComponentName = android.content.ComponentName(context, service).flattenToString()
         val enabledServices = Settings.Secure.getString(

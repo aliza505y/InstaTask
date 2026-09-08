@@ -1,45 +1,67 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="16dp">
+    xmlns:tools="http://schemas.android.com/tools"
+    tools:context=".MainActivity"
+    android:fillViewport="true">
 
-    <TextView
-        android:id="@+id/tvStatus"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Status: Unknown"
-        android:textSize="18sp"
-        android:layout_marginBottom="24dp" />
-
-    <Button
-        android:id="@+id/btnAccessibility"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Enable Accessibility Service"
-        android:layout_marginBottom="16dp" />
+        android:orientation="vertical"
+        android:padding="16dp">
 
-    <Button
-        android:id="@+id/btnStartBot"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Start Bot"
-        android:layout_marginBottom="8dp" />
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Status: Unknown"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="16dp" />
 
-    <Button
-        android:id="@+id/btnStopBot"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Stop Bot"
-        android:layout_marginBottom="24dp" />
+        <Button
+            android:id="@+id/btnAccessibility"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Enable Accessibility Service"
+            android:layout_marginBottom="8dp" />
 
-    <TextView
-        android:id="@+id/tvStats"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Statistics:\n- Profiles Scanned: 0\n- Matches Found: 0\n- Likes Distributed: 0\n- Stories Reacted: 0"
-        android:textSize="16sp"
-        android:lineSpacingExtra="4dp" />
+        <Button
+            android:id="@+id/btnStartBot"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Start Bot"
+            android:layout_marginBottom="8dp" />
 
-</LinearLayout>
+        <Button
+            android:id="@+id/btnStopBot"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Stop Bot"
+            android:layout_marginBottom="20dp" />
+
+        <!-- Live Current Activity Display -->
+        <TextView
+            android:id="@+id/tvCurrentActivity"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Current Source: None\nCurrent Target: None"
+            android:textSize="14sp"
+            android:textStyle="italic"
+            android:textColor="#555555"
+            android:layout_marginBottom="16dp"
+            android:lineSpacingExtra="4dp" />
+
+        <!-- Extended Statistics Display -->
+        <TextView
+            android:id="@+id/tvStats"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Statistics:\n- Profiles Scanned: 0\n- Matches Found: 0\n- Likes Distributed: 0\n- Comments Sent: 0\n- Stories Reacted: 0\n- Profiles Skipped: 0\n- Errors Encountered: 0"
+            android:textSize="15sp"
+            android:lineSpacingExtra="6dp" />
+
+    </LinearLayout>
+</ScrollView>
