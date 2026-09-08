@@ -22,7 +22,7 @@ import kotlin.coroutines.coroutineContext
 import kotlin.random.Random
 
 /**
- * InstaTask Bot Service - Automatisierte Interaktion für Instagram.
+ * InstaTask Bot Service - Automated Interaction for Instagram.
  */
 class BotService : AccessibilityService() {
 
@@ -34,7 +34,7 @@ class BotService : AccessibilityService() {
     private val targetProfiles = listOf(
         "houseworksrec", "loudkult", "sirupmusic", "tomorrowland_music", "kontorrecords"
     )
-    
+
     private val generativeModel = GenerativeModel(
         modelName = "gemini-1.5-pro",
         apiKey = BuildConfig.GEMINI_API_KEY
@@ -64,24 +64,24 @@ class BotService : AccessibilityService() {
 
     private fun startBot() {
         if (botJob?.isActive == true) return
-        
+
         val powerManager = getSystemService(POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP, "InstaTask::BotWakeLock")
         wakeLock?.acquire(10 * 60 * 1000L)
 
-        Toast.makeText(this, "Bot gestartet", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Bot started", Toast.LENGTH_SHORT).show()
         botJob = serviceScope.launch {
-            Log.d("InstaTaskBot", "Workflow gestartet...")
+            Log.d("InstaTaskBot", "Workflow started...")
             for (profile in targetProfiles) {
                 if (!coroutineContext.isActive) break
                 try {
                     processTargetProfile(profile)
                     randomDelay(8000, 15000)
                 } catch (e: Exception) {
-                    Log.e("InstaTaskBot", "Fehler bei $profile: ${e.localizedMessage}")
+                    Log.e("InstaTaskBot", "Error processing $profile: ${e.localizedMessage}")
                 }
             }
-            Log.d("InstaTaskBot", "Workflow beendet.")
+            Log.d("InstaTaskBot", "Workflow finished.")
         }
     }
 
@@ -95,8 +95,8 @@ class BotService : AccessibilityService() {
 
     private suspend fun processTargetProfile(username: String) {
         currentState = BotState.NAVIGATING
-        Log.d("InstaTaskBot", "Navigation zu $username")
-        
+        Log.d("InstaTaskBot", "Navigating to $username")
+
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse("instagram://user?username=$username")).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         }
@@ -105,7 +105,7 @@ class BotService : AccessibilityService() {
 
         var followersNode = findFollowerButton()
         if (followersNode == null) {
-            humanScroll() 
+            humanScroll()
             randomDelay(2000, 4000)
             followersNode = findFollowerButton()
         }
@@ -129,7 +129,7 @@ class BotService : AccessibilityService() {
             val nodes = findNodesByViewId(id)
             if (nodes.isNotEmpty()) return nodes[0]
         }
-        val keywords = listOf("follower", "Follower", "Abonnenten")
+        val keywords = listOf("followers", "follower", "Followers", "Follower", "Abonnenten")
         val root = rootInActiveWindow ?: return null
         val queue = mutableListOf(root)
         while (queue.isNotEmpty()) {
@@ -169,7 +169,7 @@ class BotService : AccessibilityService() {
                 if (!coroutineContext.isActive) break
                 val name = node.text?.toString() ?: continue
                 if (processed.contains(name) || likedProfiles.contains(name)) continue
-                
+
                 processed.add(name)
                 foundNew = true
                 scrollAttempts = 0
@@ -177,19 +177,19 @@ class BotService : AccessibilityService() {
                 sendStatsUpdate()
 
                 clickNode(node)
-                Log.d("InstaTaskBot", ">>> Öffne Profil: $name")
+                Log.d("InstaTaskBot", ">>> Opening Profile: $name")
                 randomDelay(3000, 5000)
 
                 if (isProfileViewVisible()) {
                     if (isPublicProfile() && hasPosts()) {
-                        Log.d("InstaTaskBot", "Öffentliches Profil. Interagiere...")
+                        Log.d("InstaTaskBot", "Public Profile. Interacting...")
                         statsMatchesFound++
                         sendStatsUpdate()
                         performInteractions(name)
                         interactionsCount++
                         randomDelay(3000, 5000)
                     } else {
-                        Log.d("InstaTaskBot", "Überspringe (Privat oder leer)")
+                        Log.d("InstaTaskBot", "Skipping (Private or empty profile)")
                     }
                     performGlobalAction(GLOBAL_ACTION_BACK)
                     randomDelay(1500, 2500)
@@ -210,28 +210,28 @@ class BotService : AccessibilityService() {
 
     private suspend fun performInteractions(username: String) {
         currentState = BotState.INTERACTING
-        
-        // 1. Post liken - Suche nach Grid-Elementen
+
+        // 1. Like Post - Search for grid elements
         val postIds = listOf(
             "com.instagram.android:id/image_button",
             "com.instagram.android:id/media_set_row_content_container",
-            "com.instagram.android:id/row_profile_header_container" 
+            "com.instagram.android:id/row_profile_header_container"
         )
-        
+
         var postOpened = false
         for (id in postIds) {
             val posts = findNodesByViewId(id)
             if (posts.isNotEmpty()) {
-                Log.d("InstaTaskBot", "Öffne ersten Post...")
+                Log.d("InstaTaskBot", "Opening first post...")
                 clickNode(posts[0])
                 randomDelay(3000, 5000)
-                
-                // Prüfen ob wirklich ein Post offen ist (z.B. Like-Button oder Kommentar-Feld sichtbar)
-                if (findLikeButton() != null || findNodeByContentDescription("Kommentieren") != null) {
+
+                // Check if a post is genuinely open (e.g., Like button or Comment field is visible)
+                if (findLikeButton() != null || findNodeByContentDescription("Comment") != null || findNodeByContentDescription("Kommentieren") != null) {
                     postOpened = true
                     break
                 } else {
-                    Log.d("InstaTaskBot", "Klick auf Post-Grid schlug fehl (kein Post geöffnet).")
+                    Log.d("InstaTaskBot", "Click on post grid failed (no post opened).")
                     performGlobalAction(GLOBAL_ACTION_BACK)
                     randomDelay(1000, 2000)
                 }
@@ -240,13 +240,13 @@ class BotService : AccessibilityService() {
 
         if (postOpened) {
             if (isReelVisible()) {
-                Log.d("InstaTaskBot", "Reel erkannt. Kommentiere...")
+                Log.d("InstaTaskBot", "Reel detected. Commenting...")
                 commentOnReel()
-                // Zusätzlich liken wenn möglich
+                // Additionally like if possible
                 val like = findLikeButton()
                 if (like != null) {
                     clickNode(like)
-                    Log.d("InstaTaskBot", "Reel geliked!")
+                    Log.d("InstaTaskBot", "Reel liked!")
                     statsLikesGiven++
                     sendStatsUpdate()
                 }
@@ -254,47 +254,46 @@ class BotService : AccessibilityService() {
                 val like = findLikeButton()
                 if (like != null) {
                     clickNode(like)
-                    Log.d("InstaTaskBot", ">>> ERFOLG: Post geliked! <<<")
+                    Log.d("InstaTaskBot", ">>> SUCCESS: Post liked! <<<")
                     statsLikesGiven++
                     sendStatsUpdate()
                     randomDelay(1500, 2500)
                 } else {
-                    Log.d("InstaTaskBot", "Like-Button nicht gefunden.")
+                    Log.d("InstaTaskBot", "Like button not found.")
                 }
             }
             likedProfiles.add(username)
             performGlobalAction(GLOBAL_ACTION_BACK)
             randomDelay(2000, 3000)
         } else {
-            Log.d("InstaTaskBot", "Keine Posts zum Liken gefunden.")
+            Log.d("InstaTaskBot", "No posts found to like.")
         }
-        
-        // 2. Story Reaktion - Nur wenn Story vorhanden ist
-        // Instagram markiert aktive Stories oft mit einer speziellen Content-Description oder ID
-        val avatar = findNodesByViewId("com.instagram.android:id/profile_header_avatar_container").firstOrNull() 
-                    ?: findNodesByViewId("com.instagram.android:id/row_profile_header_imageview").firstOrNull()
-        
+
+        // 2. Story Reaction - Only if story is available
+        // Instagram marks active stories with specific content description or avatar ID
+        val avatar = findNodesByViewId("com.instagram.android:id/profile_header_avatar_container").firstOrNull()
+            ?: findNodesByViewId("com.instagram.android:id/row_profile_header_imageview").firstOrNull()
+
         if (avatar != null) {
-            // Check if story is likely available (Story ring detection is hard, but we can try-click and check if we left the profile)
-            Log.d("InstaTaskBot", "Versuche Story zu öffnen...")
+            Log.d("InstaTaskBot", "Attempting to open story...")
             clickNode(avatar)
             randomDelay(3000, 5000)
-            
-            // Wenn wir immer noch auf dem Profil sind, gab es keine Story
+
+            // If we are still on the profile, no story was opened
             if (isProfileViewVisible()) {
-                Log.d("InstaTaskBot", "Keine Story vorhanden oder Klick fehlgeschlagen.")
+                Log.d("InstaTaskBot", "No story available or click failed.")
             } else {
                 val fire = findNodeByText("🔥") ?: findNodeByContentDescription("🔥")
                 if (fire != null) {
                     clickNode(fire)
-                    Log.d("InstaTaskBot", "Story Reaktion gesendet!")
+                    Log.d("InstaTaskBot", "Story reaction sent!")
                     statsStoriesReacted++
                     sendStatsUpdate()
                     randomDelay(1000, 2000)
                 } else {
-                    Log.d("InstaTaskBot", "Keine Emoji-Reaktion in Story gefunden.")
+                    Log.d("InstaTaskBot", "No emoji reaction found in story.")
                 }
-                // Zurück zum Profil
+                // Return to profile
                 performGlobalAction(GLOBAL_ACTION_BACK)
                 randomDelay(2000, 3000)
             }
@@ -307,17 +306,17 @@ class BotService : AccessibilityService() {
         while (queue.isNotEmpty()) {
             val node = queue.removeAt(0)
             val desc = node.contentDescription?.toString() ?: ""
-            if (desc.contains("Gefällt mir", true) || desc.contains("Like", true)) {
+            if (desc.contains("Like", true) || desc.contains("Gefällt mir", true)) {
                 if (node.isClickable || (node.parent?.isClickable == true)) return node
             }
-            // Reels Like Button ID oder Feed Like Button ID
+            // Reels Like button ID or Feed Like button ID
             val ids = listOf(
                 "com.instagram.android:id/row_feed_button_like",
                 "com.instagram.android:id/like_button",
                 "com.instagram.android:id/button_like"
             )
             if (ids.contains(node.viewIdResourceName)) return node
-            
+
             for (i in 0 until node.childCount) {
                 node.getChild(i)?.let { queue.add(it) }
             }
@@ -326,21 +325,21 @@ class BotService : AccessibilityService() {
     }
 
     private suspend fun commentOnReel() {
-        val commentBtn = findNodeByContentDescription("Kommentieren") 
-                      ?: findNodeByContentDescription("Comment")
-                      ?: findNodesByViewId("com.instagram.android:id/comment_button").firstOrNull()
-        
+        val commentBtn = findNodeByContentDescription("Comment")
+            ?: findNodeByContentDescription("Kommentieren")
+            ?: findNodesByViewId("com.instagram.android:id/comment_button").firstOrNull()
+
         if (commentBtn != null) {
-            Log.d("InstaTaskBot", "Klicke auf Kommentar-Button...")
+            Log.d("InstaTaskBot", "Clicking comment button...")
             clickNode(commentBtn)
             randomDelay(3000, 4000)
-            
+
             val inputIds = listOf(
                 "com.instagram.android:id/layout_comment_thread_edittext",
                 "com.instagram.android:id/comment_edittext",
                 "com.instagram.android:id/direct_text_input_store_front"
             )
-            
+
             var input: AccessibilityNodeInfo? = null
             for (id in inputIds) {
                 input = findNodesByViewId(id).firstOrNull()
@@ -348,45 +347,45 @@ class BotService : AccessibilityService() {
             }
 
             if (input == null) {
-                // Letzter Versuch: Suche nach EditText Klasse
+                // Fallback attempt: Search by EditText class
                 input = findNodeByClass("android.widget.EditText")
             }
 
             if (input != null) {
-                Log.d("InstaTaskBot", "Kommentarfeld gefunden. Fokussiere...")
+                Log.d("InstaTaskBot", "Comment input field found. Focusing...")
                 input.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
                 randomDelay(1000, 2000)
 
                 val text = if (Random.nextBoolean()) "🔥🔥🔥" else "lets go!"
                 val arguments = android.os.Bundle()
                 arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
-                
-                Log.d("InstaTaskBot", "Setze Text: $text")
+
+                Log.d("InstaTaskBot", "Setting text: $text")
                 val success = input.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
-                
+
                 if (!success) {
-                    Log.w("InstaTaskBot", "ACTION_SET_TEXT fehlgeschlagen. Versuche es direkt...")
+                    Log.w("InstaTaskBot", "ACTION_SET_TEXT failed. Trying directly...")
                 }
 
                 randomDelay(2000, 3000)
-                
-                val postBtn = findNodeByText("Posten") 
-                           ?: findNodeByText("Post") 
-                           ?: findNodesByViewId("com.instagram.android:id/layout_comment_thread_post_button").firstOrNull()
-                           ?: findNodesByViewId("com.instagram.android:id/comment_post_button").firstOrNull()
+
+                val postBtn = findNodeByText("Post")
+                    ?: findNodeByText("Posten")
+                    ?: findNodesByViewId("com.instagram.android:id/layout_comment_thread_post_button").firstOrNull()
+                    ?: findNodesByViewId("com.instagram.android:id/comment_post_button").firstOrNull()
 
                 if (postBtn != null) {
-                    Log.d("InstaTaskBot", "Klicke auf 'Posten'...")
+                    Log.d("InstaTaskBot", "Clicking 'Post'...")
                     clickNode(postBtn)
-                    Log.d("InstaTaskBot", "Reel kommentiert: $text")
+                    Log.d("InstaTaskBot", "Reel commented: $text")
                     randomDelay(2000, 3000)
                 } else {
-                    Log.w("InstaTaskBot", "'Posten'-Button nicht gefunden.")
+                    Log.w("InstaTaskBot", "'Post' button not found.")
                 }
             } else {
-                Log.w("InstaTaskBot", "Kein Kommentar-Eingabefeld gefunden.")
+                Log.w("InstaTaskBot", "No comment input field found.")
             }
-            // Zurück zum Reel-Viewer
+            // Back to Reel viewer
             performGlobalAction(GLOBAL_ACTION_BACK)
             randomDelay(2000, 3000)
         }
@@ -456,12 +455,12 @@ class BotService : AccessibilityService() {
     }
 
     private fun findFollowerNodes() = findNodesByViewId("com.instagram.android:id/follow_list_username")
-    private fun isPublicProfile() = findNodeByText("Dieses Konto ist privat") == null && findNodeByText("Private") == null
-    private fun isProfileViewVisible() = findNodesByViewId("com.instagram.android:id/profile_header_container").isNotEmpty() || 
-                                       findNodesByViewId("com.instagram.android:id/profile_header_bio_text").isNotEmpty()
+    private fun isPublicProfile() = findNodeByText("This account is private") == null && findNodeByText("Dieses Konto ist privat") == null && findNodeByText("Private") == null
+    private fun isProfileViewVisible() = findNodesByViewId("com.instagram.android:id/profile_header_container").isNotEmpty() ||
+            findNodesByViewId("com.instagram.android:id/profile_header_bio_text").isNotEmpty()
     private fun isReelVisible() = findNodesByViewId("com.instagram.android:id/reels_video_container").isNotEmpty()
     private fun hasPosts(): Boolean {
-        val node = findNodeByText("Beiträge") ?: findNodeByText("Posts")
+        val node = findNodeByText("Posts") ?: findNodeByText("Beiträge")
         return (node?.parent?.getChild(0)?.text?.toString()?.filter { it.isDigit() }?.toIntOrNull() ?: 0) > 0
     }
     private fun getBioText() = findNodesByViewId("com.instagram.android:id/profile_header_bio_text").firstOrNull()?.text?.toString() ?: ""

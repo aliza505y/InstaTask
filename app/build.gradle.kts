@@ -15,7 +15,7 @@ val localProperties = Properties().apply {
 
 android {
     namespace = "com.dopamin.instatask"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.dopamin.instatask"
@@ -67,6 +67,9 @@ dependencies {
     
     // AppCompat
     implementation("androidx.appcompat:appcompat:1.6.1")
+    implementation(libs.material)
+    implementation(libs.androidx.activity)
+    implementation(libs.androidx.constraintlayout)
 
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))

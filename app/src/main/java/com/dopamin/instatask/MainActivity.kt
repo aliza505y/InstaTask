@@ -25,8 +25,8 @@ class MainActivity : AppCompatActivity() {
                 val matches = intent.getIntExtra("MATCHES", 0)
                 val likes = intent.getIntExtra("LIKES", 0)
                 val stories = intent.getIntExtra("STORIES", 0)
-                
-                tvStats.text = "Statistik:\n- Profile gescannt: $profiles\n- Matches gefunden: $matches\n- Likes verteilt: $likes\n- Stories reagiert: $stories"
+
+                tvStats.text = "Statistics:\n- Profiles Scanned: $profiles\n- Matches Found: $matches\n- Likes Distributed: $likes\n- Stories Reacted: $stories"
             }
         }
     }
@@ -36,48 +36,48 @@ class MainActivity : AppCompatActivity() {
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(R.layout.activity_main)
 
-        // UI-Elemente initialisieren
+        // Initialize UI Elements
         btnStartBot = findViewById(R.id.btnStartBot)
         btnStopBot = findViewById(R.id.btnStopBot)
         btnAccessibility = findViewById(R.id.btnAccessibility)
         tvStatus = findViewById(R.id.tvStatus)
         tvStats = findViewById(R.id.tvStats)
 
-        // Listener für Button "Accessibility Service aktivieren"
+        // Listener for "Enable Accessibility Service" button
         btnAccessibility.setOnClickListener {
             val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
             startActivity(intent)
         }
 
-        // Listener für "Bot Starten"
+        // Listener for "Start Bot" button
         btnStartBot.setOnClickListener {
             if (isAccessibilityServiceEnabled(this, BotService::class.java)) {
                 val intent = Intent(this, BotService::class.java).apply {
                     action = "START_BOT"
                 }
                 startService(intent)
-                tvStatus.text = "Status: Bot läuft..."
-                Toast.makeText(this, "Bot gestartet", Toast.LENGTH_SHORT).show()
+                tvStatus.text = "Status: Bot running..."
+                Toast.makeText(this, "Bot started", Toast.LENGTH_SHORT).show()
             } else {
                 Toast.makeText(
                     this,
-                    "Bitte zuerst den Accessibility Service aktivieren!",
+                    "Please enable the Accessibility Service first!",
                     Toast.LENGTH_LONG
                 ).show()
             }
         }
 
-        // Listener für "Bot Stoppen"
+        // Listener for "Stop Bot" button
         btnStopBot.setOnClickListener {
             val intent = Intent(this, BotService::class.java).apply {
                 action = "STOP_BOT"
             }
             startService(intent)
-            tvStatus.text = "Status: Gestoppt"
-            Toast.makeText(this, "Bot gestoppt", Toast.LENGTH_SHORT).show()
+            tvStatus.text = "Status: Stopped"
+            Toast.makeText(this, "Bot stopped", Toast.LENGTH_SHORT).show()
         }
 
-        // AUTO-START: Wenn Service bereits aktiv, starte Bot sofort
+        // AUTO-START: If service is already active, start bot immediately
         if (isAccessibilityServiceEnabled(this, BotService::class.java)) {
             tvStatus.postDelayed({
                 startBotWorkflow()
@@ -90,8 +90,8 @@ class MainActivity : AppCompatActivity() {
             action = "START_BOT"
         }
         startService(intent)
-        tvStatus.text = "Status: Bot läuft (Auto-Start)..."
-        Toast.makeText(this, "Bot automatisch gestartet", Toast.LENGTH_SHORT).show()
+        tvStatus.text = "Status: Bot running (Auto-Start)..."
+        Toast.makeText(this, "Bot automatically started", Toast.LENGTH_SHORT).show()
     }
 
     override fun onResume() {
@@ -102,11 +102,11 @@ class MainActivity : AppCompatActivity() {
             android.content.IntentFilter("com.dopamin.instatask.STATS_UPDATE"),
             androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
         )
-        // Prüfen, ob der Service aktiviert ist und Status-Text anpassen
+        // Check if the accessibility service is enabled and update status text
         if (isAccessibilityServiceEnabled(this, BotService::class.java)) {
-            tvStatus.text = "Status: Bereit (Service aktiv)"
+            tvStatus.text = "Status: Ready (Service active)"
         } else {
-            tvStatus.text = "Status: Service deaktiviert in Einstellungen"
+            tvStatus.text = "Status: Service disabled in Settings"
         }
     }
 
@@ -115,7 +115,7 @@ class MainActivity : AppCompatActivity() {
         unregisterReceiver(statsReceiver)
     }
 
-    // Hilfsfunktion zum Prüfen, ob der Accessibility Service eingeschaltet ist
+    // Helper function to check if Accessibility Service is enabled
     private fun isAccessibilityServiceEnabled(context: Context, service: Class<*>): Boolean {
         val expectedComponentName = android.content.ComponentName(context, service).flattenToString()
         val enabledServices = Settings.Secure.getString(
