@@ -84,8 +84,31 @@ class BotService : AccessibilityService() {
         when (intent?.action) {
             "START_BOT" -> startBot()
             "STOP_BOT" -> stopBot()
+            "CLEAR_STATS" -> clearDatabaseStats()
         }
         return START_STICKY
+    }
+
+    private  fun clearDatabaseStats(){
+        serviceScope.launch(Dispatchers.IO){
+            database.botDao().clearAllLogs()
+            database.botDao().clearAllProcessedProfiles()
+
+            //reset local variables
+            statsProfilesScanned=0
+            statsMatchesFound =0
+            statsLikesGiven =0
+            statsCommentsSent=0
+            statsStoriesReacted =0
+            statsProfilesSkipped= 0
+            statsErrorsEncountered =0
+
+            //UI ko zero stats bhajna
+            withContext(Dispatchers.Main){
+                Toast.makeText(this@BotService, "Stats cleared successfully!", Toast.LENGTH_SHORT).show()
+                sendStatsUpdate()
+            }
+        }
     }
 
     private fun startBot() {
@@ -571,18 +594,28 @@ class BotService : AccessibilityService() {
     }
 
     private fun sendStatsUpdate() {
-        val intent = Intent("com.dopamin.instatask.STATS_UPDATE").apply {
-            putExtra("CURRENT_SOURCE", currentSourceProfile)
-            putExtra("CURRENT_TARGET", currentTargetProfile)
-            putExtra("PROFILES_SCANNED", statsProfilesScanned)
-            putExtra("MATCHES_FOUND", statsMatchesFound)
-            putExtra("LIKES_GIVEN", statsLikesGiven)
-            putExtra("COMMENTS_SENT", statsCommentsSent)
-            putExtra("STORIES_REACTED", statsStoriesReacted)
-            putExtra("PROFILES_SKIPPED", statsProfilesSkipped)
-            putExtra("ERRORS", statsErrorsEncountered)
+        serviceScope.launch(Dispatchers.IO) {
+            val totalLikes = database.botDao().getTotalLikesCount()
+            val totalComments= database.botDao().getTotalCommentsCount()
+            val totalStories= database.botDao().getTotalStoriesCount()
+            val totalScanned= database.botDao().getTotalProfilesScanned()
+            val totalMatches= database.botDao().getTotalMatchesFound()
+            val totalSkipped= database.botDao().getTotalProfilesSkipped()
+            val totalErrors = database.botDao().getTotalErrors()
+
+            val intent = Intent("com.dopamin.instatask.STATS_UPDATE").apply {
+                putExtra("CURRENT_SOURCE", currentSourceProfile)
+                putExtra("CURRENT_TARGET", currentTargetProfile)
+                putExtra("PROFILES_SCANNED", totalScanned)
+                putExtra("MATCHES_FOUND", totalMatches)
+                putExtra("LIKES_GIVEN", totalLikes)
+                putExtra("COMMENTS_SENT", totalComments)
+                putExtra("STORIES_REACTED", totalStories)
+                putExtra("PROFILES_SKIPPED", totalSkipped)
+                putExtra("ERRORS", totalErrors)
+            }
+            sendBroadcast(intent)
         }
-        sendBroadcast(intent)
     }
 
     private fun findNodeByClass(className: String): AccessibilityNodeInfo? {

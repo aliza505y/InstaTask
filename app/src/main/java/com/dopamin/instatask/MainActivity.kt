@@ -1,5 +1,6 @@
 package com.dopamin.instatask
 
+import android.R.attr.action
 import android.annotation.SuppressLint
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -23,6 +24,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnStartBot: Button
     private lateinit var btnStopBot: Button
     private lateinit var btnAccessibility: Button
+    private lateinit var btnClearStats : Button
     private lateinit var tvStatus: TextView
     private lateinit var tvCurrentActivity: TextView
     private lateinit var tvStats: TextView
@@ -60,13 +62,22 @@ class MainActivity : AppCompatActivity() {
 
         btnStartBot = findViewById(R.id.btnStartBot)
         btnStopBot = findViewById(R.id.btnStopBot)
+        btnClearStats = findViewById(R.id.btnClearStats)
         btnAccessibility = findViewById(R.id.btnAccessibility)
         tvStatus = findViewById(R.id.tvStatus)
         tvCurrentActivity = findViewById(R.id.tvCurrentActivity)
         tvStats = findViewById(R.id.tvStats)
 
+
         btnAccessibility.setOnClickListener {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }
+
+        btnClearStats.setOnClickListener {
+            val intent = Intent(this, BotService::class.java).apply {
+                action = "CLEAR_STATS"
+            }
+            startService(intent)
         }
 
         btnStartBot.setOnClickListener {
@@ -99,16 +110,23 @@ class MainActivity : AppCompatActivity() {
     private fun loadStatsFromDatabase() {
         lifecycleScope.launch(Dispatchers.IO) {
             val totalProcessed = database.botDao().getProcessedCount()
+            val totalLikes = database.botDao().getTotalLikesCount()
+            val totalComments = database.botDao().getTotalCommentsCount()
+            val totalStories = database.botDao().getTotalStoriesCount()
+            val totalScanned = database.botDao().getTotalProfilesScanned()
+            val totalMatches = database.botDao().getTotalMatchesFound()
+            val totalSkipped = database.botDao().getTotalProfilesSkipped()
+            val totalErrors = database.botDao().getTotalErrors()
             withContext(Dispatchers.Main) {
                 // Initial load from Room Database
                 updateStatsTextView(
-                    scanned = totalProcessed,
-                    matches = 0,
-                    likes = 0,
-                    comments = 0,
-                    stories = 0,
-                    skipped = 0,
-                    errors = 0
+                    scanned = totalScanned,
+                    matches = totalMatches,
+                    likes = totalLikes,
+                    comments = totalComments,
+                    stories = totalStories,
+                    skipped = totalSkipped,
+                    errors = totalErrors
                 )
             }
         }

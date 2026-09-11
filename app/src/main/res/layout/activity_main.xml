@@ -63,5 +63,15 @@
             android:textSize="15sp"
             android:lineSpacingExtra="6dp" />
 
+
+        <Button
+            android:id="@+id/btnClearStats"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Clear Stats &amp; History"
+            android:backgroundTint="#D32F2F"
+            android:textColor="#FFFFFF"
+            android:layout_marginTop="100dp"/>
+
     </LinearLayout>
 </ScrollView>
