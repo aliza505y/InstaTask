@@ -38,7 +38,7 @@ class MainActivity : AppCompatActivity() {
                 val currentTarget = intent.getStringExtra("CURRENT_TARGET") ?: "None"
 
                 val scanned = intent.getIntExtra("PROFILES_SCANNED", 0)
-                val matches = intent.getIntExtra("MATCHES_FOUND", 0)
+                val matches = intent.getIntExtra("PROFILES_FOLLOWED", 0)
                 val likes = intent.getIntExtra("LIKES_GIVEN", 0)
                 val comments = intent.getIntExtra("COMMENTS_SENT", 0)
                 val stories = intent.getIntExtra("STORIES_REACTED", 0)
@@ -114,14 +114,14 @@ class MainActivity : AppCompatActivity() {
             val totalComments = database.botDao().getTotalCommentsCount()
             val totalStories = database.botDao().getTotalStoriesCount()
             val totalScanned = database.botDao().getTotalProfilesScanned()
-            val totalMatches = database.botDao().getTotalMatchesFound()
+            val totalFollowed = database.botDao().getTotalProfilesFollowed()
             val totalSkipped = database.botDao().getTotalProfilesSkipped()
             val totalErrors = database.botDao().getTotalErrors()
             withContext(Dispatchers.Main) {
                 // Initial load from Room Database
                 updateStatsTextView(
                     scanned = totalScanned,
-                    matches = totalMatches,
+                    followed = totalFollowed,
                     likes = totalLikes,
                     comments = totalComments,
                     stories = totalStories,
@@ -134,13 +134,13 @@ class MainActivity : AppCompatActivity() {
 
     @SuppressLint("SetTextI18n")
     private fun updateStatsTextView(
-        scanned: Int, matches: Int, likes: Int,
+        scanned: Int, followed: Int, likes: Int,
         comments: Int, stories: Int, skipped: Int, errors: Int
     ) {
         tvStats.text = """
             Statistics:
             - Profiles Scanned: $scanned
-            - Matches Found: $matches
+            - Profiles Followed: $followed
             - Likes Distributed: $likes
             - Comments Sent: $comments
             - Stories Reacted: $stories

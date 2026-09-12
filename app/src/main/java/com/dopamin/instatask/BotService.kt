@@ -27,7 +27,7 @@ import kotlinx.coroutines.Dispatchers
 
 /**
  * InstaTask Bot Service - Robust Instagram Automation Engine
- * Fixed Navigation Back, Story Re-click loop, Reel comment, and Reel loop bugs.
+ * Interacts with all profiles (likes/comments/stories), but FOLLOWS only Male/DJ profiles.
  */
 class BotService : AccessibilityService() {
 
@@ -42,11 +42,6 @@ class BotService : AccessibilityService() {
         "houseworksrec", "loudkult", "sirupmusic", "tomorrowland_music", "kontorrecords"
     )
 
-    private val generativeModel = GenerativeModel(
-        modelName = "gemini-1.5-pro",
-        apiKey = BuildConfig.GEMINI_API_KEY
-    )
-
     private enum class BotState { IDLE, NAVIGATING, BROWSING_FOLLOWERS, ANALYZING_PROFILE, INTERACTING }
     private var currentState = BotState.IDLE
 
@@ -54,7 +49,7 @@ class BotService : AccessibilityService() {
     private var currentSourceProfile = "None"
     private var currentTargetProfile = "None"
     private var statsProfilesScanned = 0
-    private var statsMatchesFound = 0
+    private var statsProfilesFollowed = 0
     private var statsLikesGiven = 0
     private var statsCommentsSent = 0
     private var statsStoriesReacted = 0
@@ -89,22 +84,21 @@ class BotService : AccessibilityService() {
         return START_STICKY
     }
 
-    private  fun clearDatabaseStats(){
-        serviceScope.launch(Dispatchers.IO){
+    private fun clearDatabaseStats() {
+        serviceScope.launch(Dispatchers.IO) {
             database.botDao().clearAllLogs()
-            database.botDao().clearAllProcessedProfiles()
+           // database.botDao().clearAllProcessedProfiles()
 
-            //reset local variables
-            statsProfilesScanned=0
-            statsMatchesFound =0
-            statsLikesGiven =0
-            statsCommentsSent=0
-            statsStoriesReacted =0
-            statsProfilesSkipped= 0
-            statsErrorsEncountered =0
+            // Reset local variables
+            statsProfilesScanned = 0
+            statsProfilesFollowed = 0
+            statsLikesGiven = 0
+            statsCommentsSent = 0
+            statsStoriesReacted = 0
+            statsProfilesSkipped = 0
+            statsErrorsEncountered = 0
 
-            //UI ko zero stats bhajna
-            withContext(Dispatchers.Main){
+            withContext(Dispatchers.Main) {
                 Toast.makeText(this@BotService, "Stats cleared successfully!", Toast.LENGTH_SHORT).show()
                 sendStatsUpdate()
             }
@@ -227,7 +221,7 @@ class BotService : AccessibilityService() {
 
             val allVisibleAlreadyProcessed = withContext(Dispatchers.IO) {
                 nodes.all { node ->
-                    val name = node.text?.toString() ?: ""
+                    val name = node.text?.toString()?.trim()?: ""
                     name.isNotEmpty() && database.botDao().isProfileProcessed(name)
                 }
             }
@@ -273,12 +267,9 @@ class BotService : AccessibilityService() {
                 randomDelay(3000, 5000)
 
                 if (isProfileViewVisible()) {
-                    val bioText = getBioText()
-                    val isMaleOrDJ = isMaleOrDJProfile(name, bioText)
-
-                    if (isPublicProfile() && hasPosts() && isMaleOrDJ) {
-                        Log.d("InstaTaskBot", "Matching Profile ($name). Interacting...")
-                        statsMatchesFound++
+                    // 🟢 FILTER REMOVED: Ab har public aur active profile par interact hoga (chahe male ho ya female)
+                    if (isPublicProfile() && hasPosts()) {
+                        Log.d("InstaTaskBot", "Interacting with Profile ($name)...")
                         sendStatsUpdate()
 
                         performInteractions(name)
@@ -287,7 +278,7 @@ class BotService : AccessibilityService() {
                         interactionsCount++
                         randomDelay(3000, 5000)
                     } else {
-                        val reason = if (!isMaleOrDJ) "Non-male / Non-DJ profile" else "Private or zero posts"
+                        val reason = "Private or zero posts"
                         Log.d("InstaTaskBot", "Skipping $name - Reason: $reason")
                         statsProfilesSkipped++
                         saveProcessedProfileToRoom(name, "SKIPPED_FILTER")
@@ -313,6 +304,53 @@ class BotService : AccessibilityService() {
         }
     }
 
+    /**
+     * 🟢 FOLLOW PROFILE FUNCTION (Only follows if it's a Male / DJ profile)
+     */
+    private suspend fun followCurrentProfile(username: String): Boolean {
+        // Bio nikal kar check karein ke profile male/DJ hai ya nahi
+        val bioText = getBioText()
+        val isMaleOrDJ = isMaleOrDJProfile(username, bioText)
+
+        if (!isMaleOrDJ) {
+            Log.d("InstaTaskBot", "Skipping Follow: $username is not matching Male/DJ criteria.")
+            return false
+        }
+
+        val followTexts = listOf("Follow", "Folgen", "Seguir", "Follow Back")
+        val root = rootInActiveWindow ?: return false
+        val queue = mutableListOf(root)
+
+        while (queue.isNotEmpty()) {
+            val node = queue.removeAt(0)
+            val text = node.text?.toString() ?: ""
+            val desc = node.contentDescription?.toString() ?: ""
+
+            // Agar "Following" ya "Requested" likha hai matlab pehle hi follow hai
+            if (text.equals("Following", true) || text.equals("Requested", true) ||
+                desc.equals("Following", true) || desc.equals("Requested", true)) {
+                Log.d("InstaTaskBot", "Already followed or requested.")
+                return false
+            }
+
+            // Agar Follow button mil jaye aur wo clickable ho
+            if ((followTexts.any { text.equals(it, true) } || followTexts.any { desc.equals(it, true) }) && node.isClickable) {
+                clickNode(node)
+                Log.d("InstaTaskBot", ">>> SUCCESS: Male/DJ Profile Followed ($username)! <<<")
+                randomDelay(1500, 2500)
+                return true
+            }
+
+            for (i in 0 until node.childCount) {
+                node.getChild(i)?.let { queue.add(it) }
+            }
+        }
+        return false
+    }
+
+    /**
+     * 🟢 PERFORM INTERACTIONS (Like, Comment, Story Reaction on ALL profiles, but Follow ONLY on Male/DJ)
+     */
     private suspend fun performInteractions(username: String) {
         currentState = BotState.INTERACTING
 
@@ -329,7 +367,7 @@ class BotService : AccessibilityService() {
             return
         }
 
-        // 2. POST / REEL INTERACTION
+        // 2. POST / REEL INTERACTION (Sab par hoga)
         var postOpened = false
         val gridNodes = findPostGridItems()
 
@@ -376,7 +414,7 @@ class BotService : AccessibilityService() {
             randomDelay(2000, 3000)
         }
 
-        // 3. STORY REACTION EXECUTION (FIXED LOOP ISSUE)
+        // 3. STORY REACTION EXECUTION (Sab par hoga agar story hui)
         if (isProfileViewVisible()) {
             val avatar = findNodesByViewId("com.instagram.android:id/profile_header_avatar_container").firstOrNull()
                 ?: findNodesByViewId("com.instagram.android:id/row_profile_header_imageview").firstOrNull()
@@ -386,7 +424,6 @@ class BotService : AccessibilityService() {
                 clickNode(avatar)
                 randomDelay(2500, 3500)
 
-                // Check if story actually opened (Profile visible na ho)
                 if (!isProfileViewVisible()) {
                     val fire = findNodeByText("🔥") ?: findNodeByContentDescription("🔥")
                     if (fire != null) {
@@ -398,12 +435,23 @@ class BotService : AccessibilityService() {
                         randomDelay(1500, 2000)
                     }
 
-                    // Story close karne ke liye safe exit
                     safeGoBack()
                     randomDelay(2000, 2500)
                 } else {
                     Log.d("InstaTaskBot", "No story active.")
                 }
+            }
+        }
+
+        // 4. FOLLOW PROFILE INTEGRATION (Sirf Male/DJ profiles ke liye chalega)
+        if (isProfileViewVisible()) {
+            val didFollow = followCurrentProfile(username)
+            if (didFollow) {
+                statsProfilesFollowed++
+                saveProcessedProfileToRoom(username, "PROFILES_FOLLOWED")
+                logActionToRoom(username, "PROFILES_FOLLOWED", "Successfully followed user", true)
+                sendStatsUpdate()
+                randomDelay(1500, 2000)
             }
         }
 
@@ -414,20 +462,32 @@ class BotService : AccessibilityService() {
         }
     }
 
+    /**
+     * 🟢 MALE / DJ CHECKER (Only used inside follow logic now)
+     */
     private fun isMaleOrDJProfile(username: String, bio: String): Boolean {
-        val djKeywords = listOf(
-            "dj", "producer", "music", "remix", "beatmaker", "sound", "artist",
-            "house", "techno", "edm", "label", "track", "records", "audio"
-        )
-        val femaleKeywords = listOf(
-            "female", "girl", "woman", "mom", "she/her", "queen", "model",
-            "makeup", "beauty", "fashionista", "lady", "wife", "sister"
-        )
-
         val combinedText = "$username $bio".lowercase()
 
-        if (femaleKeywords.any { combinedText.contains(it) }) return false
-        if (djKeywords.any { combinedText.contains(it) }) return true
+        // Strict Negative Filters (In mein se kuch bhi match ho toh follow nahi karega)
+        val femaleAndBusinessKeywords = listOf(
+            "female", "girl", "woman", "mom", "she/her", "queen", "model",
+            "makeup", "beauty", "fashionista", "lady", "wife", "sister",
+            "salon", "lashes", "nails", "boutique", "hijab", "mua", "makeupartist"
+        )
+        if (femaleAndBusinessKeywords.any { combinedText.contains(it) }) {
+            return false
+        }
+
+        // Positive Keywords (DJ, Music, Producer, etc.)
+        val djOrMusicKeywords = listOf(
+            "dj", "producer", "music", "remix", "beatmaker", "sound", "artist",
+            "house", "techno", "edm", "label", "track", "records", "audio", "djane"
+        )
+
+        if (djOrMusicKeywords.any { combinedText.contains(it) }) {
+            return true
+        }
+
         return true
     }
 
@@ -494,7 +554,7 @@ class BotService : AccessibilityService() {
         return null
     }
 
-    // 🟢 REEL COMMENT AUTOMATION (FIXED COMMENTING & FOCUS ISSUE)
+    // 🟢 REEL COMMENT AUTOMATION
     private suspend fun commentOnReel(username: String) {
         val commentBtn = findNodeByContentDescription("Comment")
             ?: findNodeByContentDescription("Kommentieren")
@@ -522,14 +582,12 @@ class BotService : AccessibilityService() {
             }
 
             if (input != null) {
-                // Input area ko tap karna zaroori hai taake keyboard Focus enable ho sakay
                 clickNode(input)
                 randomDelay(1000, 1500)
 
                 input.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
                 randomDelay(800, 1200)
 
-                // Pick a dynamic comment from the list
                 val commentText = reelComments.random()
                 val arguments = Bundle().apply {
                     putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, commentText)
@@ -552,13 +610,11 @@ class BotService : AccessibilityService() {
                 }
             }
 
-            // Comment sheet close karne ke liye back
             safeGoBack()
             randomDelay(1500, 2500)
         }
     }
 
-    // 🟢 SAFE BACK ACTION (Stuck Navigation Fix)
     private suspend fun safeGoBack() {
         performGlobalAction(GLOBAL_ACTION_BACK)
         randomDelay(800, 1200)
@@ -596,18 +652,18 @@ class BotService : AccessibilityService() {
     private fun sendStatsUpdate() {
         serviceScope.launch(Dispatchers.IO) {
             val totalLikes = database.botDao().getTotalLikesCount()
-            val totalComments= database.botDao().getTotalCommentsCount()
-            val totalStories= database.botDao().getTotalStoriesCount()
-            val totalScanned= database.botDao().getTotalProfilesScanned()
-            val totalMatches= database.botDao().getTotalMatchesFound()
-            val totalSkipped= database.botDao().getTotalProfilesSkipped()
+            val totalComments = database.botDao().getTotalCommentsCount()
+            val totalStories = database.botDao().getTotalStoriesCount()
+            val totalScanned = database.botDao().getTotalProfilesScanned()
+            val totalFollowed = database.botDao().getTotalProfilesFollowed()
+            val totalSkipped = database.botDao().getTotalProfilesSkipped()
             val totalErrors = database.botDao().getTotalErrors()
 
             val intent = Intent("com.dopamin.instatask.STATS_UPDATE").apply {
                 putExtra("CURRENT_SOURCE", currentSourceProfile)
                 putExtra("CURRENT_TARGET", currentTargetProfile)
                 putExtra("PROFILES_SCANNED", totalScanned)
-                putExtra("MATCHES_FOUND", totalMatches)
+                putExtra("PROFILES_FOLLOWED", totalFollowed)
                 putExtra("LIKES_GIVEN", totalLikes)
                 putExtra("COMMENTS_SENT", totalComments)
                 putExtra("STORIES_REACTED", totalStories)

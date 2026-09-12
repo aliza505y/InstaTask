@@ -45,6 +45,9 @@ interface BotDao {
     @Query("SELECT COUNT(*) FROM processed_profiles WHERE actionTaken = 'INTERACTED'")
     suspend fun getTotalMatchesFound(): Int
 
+    @Query("SELECT COUNT(*) FROM processed_profiles WHERE actionTaken = 'PROFILES_FOLLOWED' OR actionTaken = 'INTERACTED'")
+    suspend fun getTotalProfilesFollowed(): Int
+
     @Query("SELECT COUNT(*) FROM processed_profiles WHERE actionTaken LIKE 'SKIPPED%'")
     suspend fun getTotalProfilesSkipped(): Int
 

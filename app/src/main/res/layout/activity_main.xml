@@ -59,7 +59,7 @@
             android:id="@+id/tvStats"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Statistics:\n- Profiles Scanned: 0\n- Matches Found: 0\n- Likes Distributed: 0\n- Comments Sent: 0\n- Stories Reacted: 0\n- Profiles Skipped: 0\n- Errors Encountered: 0"
+            android:text="Statistics:\n- Profiles Scanned: 0\n- Profiles Followed: 0\n- Likes Distributed: 0\n- Comments Sent: 0\n- Stories Reacted: 0\n- Profiles Skipped: 0\n- Errors Encountered: 0"
             android:textSize="15sp"
             android:lineSpacingExtra="6dp" />
 
