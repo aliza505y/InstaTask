@@ -16,26 +16,24 @@ import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Toast
-import com.google.ai.client.generativeai.GenerativeModel
 import kotlinx.coroutines.*
 import java.util.concurrent.Executors
-import kotlin.coroutines.coroutineContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 import kotlin.random.Random
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.Dispatchers
-import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.pm.ServiceInfo
+import androidx.core.app.NotificationCompat
+import kotlin.coroutines.coroutineContext
 
 /**
- * InstaTask Bot Service - Robust Instagram Automation Engine
- * Interacts with all profiles (likes/comments/stories), but FOLLOWS only Male/DJ profiles.
+ * InstaTask Bot Service - Fixed Background Execution Engine
  */
 class BotService : AccessibilityService() {
 
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    // 🟢 FIX 1: Default/IO Coroutine Scope to avoid Main Thread freezing in background
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var botJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
@@ -43,7 +41,7 @@ class BotService : AccessibilityService() {
     private lateinit var database: AppDatabase
 
     private val targetProfiles = listOf(
-        "tomorrowland_music", "kontorrecords", "houseworksrec", "loudkult", "sirupmusic",
+        "houseworksrec", "loudkult", "tomorrowland_music", "kontorrecords", "sirupmusic",
     )
 
     private enum class BotState { IDLE, NAVIGATING, BROWSING_FOLLOWERS, ANALYZING_PROFILE, INTERACTING }
@@ -60,7 +58,6 @@ class BotService : AccessibilityService() {
     private var statsProfilesSkipped = 0
     private var statsErrorsEncountered = 0
 
-    // Random comments array for Reels
     private val reelComments = listOf(
         "Banger track! 🎶🔥",
         "Absolute vibe! 🙌🎧",
@@ -88,12 +85,30 @@ class BotService : AccessibilityService() {
         return START_STICKY
     }
 
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        startForegroundServiceNotification()
+        Log.d("InstaTaskBot", "Service Connected to Foreground")
+    }
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        Log.w("InstaTaskBot", "⚠️ Service is being unbound by OS! Cleaning up...")
+        stopBot()
+        // true return karne se jab OS dobara active hoga tou onRebind call hoga
+        return true
+    }
+
+    override fun onRebind(intent: Intent?) {
+        super.onRebind(intent)
+        Log.d("InstaTaskBot", "🔄 Service Rebound Successfully!")
+        startForegroundServiceNotification()
+    }
+
     private fun clearDatabaseStats() {
         serviceScope.launch(Dispatchers.IO) {
             database.botDao().clearAllLogs()
             database.botDao().clearAllProcessedProfiles()
 
-            // Reset local variables
             statsProfilesScanned = 0
             statsProfilesFollowed = 0
             statsLikesGiven = 0
@@ -104,74 +119,94 @@ class BotService : AccessibilityService() {
 
             withContext(Dispatchers.Main) {
                 Toast.makeText(this@BotService, "Stats cleared successfully!", Toast.LENGTH_SHORT).show()
-                sendStatsUpdate()
             }
+            sendStatsUpdate()
         }
     }
 
     @SuppressLint("ForegroundServiceType")
-    private fun startBot() {
-        if (botJob?.isActive == true) return
-        // Foreground service notification setup for Android O and above
+    private fun startForegroundServiceNotification() {
+        val channelId = "bot_foreground_channel"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
-                "InstaTaskChannel",
-                "Bot Background Service",
+                channelId,
+                "InstaTask Running Service",
                 NotificationManager.IMPORTANCE_LOW
             )
             val manager = getSystemService(NotificationManager::class.java)
             manager?.createNotificationChannel(channel)
-
-            val notification = Notification.Builder(this, "InstaTaskChannel")
-                .setContentTitle("InstaTask Bot Running")
-                .setContentText("Automating Instagram workflow safely...")
-                .setSmallIcon(android.R.drawable.ic_menu_manage)
-                .build()
-            startForeground(1, notification)
         }
 
+        val notification = NotificationCompat.Builder(this, channelId)
+            .setContentTitle("InstaTask Bot is Active")
+            .setContentText("Automating workflows safely in background...")
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setOngoing(true)
+            .build()
+
+        // 🟢 FIX 2: Dynamic Foreground Type support for Android 14+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(101, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(101, notification)
+        }
+    }
+
+    private fun startBot() {
+        if (botJob?.isActive == true) return
+
+        // 🟢 1. KeepAlive Engine Service Start Karein
+        val keepAliveIntent = Intent(this, KeepAliveService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(keepAliveIntent)
+        } else {
+            startService(keepAliveIntent)
+        }
+
+
+
+        startForegroundServiceNotification()
+
+        // 🟢 FIX 3: PARTIAL_WAKE_LOCK to keep CPU awake even if Screen turns off
         val powerManager = getSystemService(POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(
-            PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
-            "InstaTask::BotWakeLock"
-        )
-        wakeLock?.acquire(10 * 60 * 1000L)
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "InstaTask::BotCPUWakeLock"
+        ).apply {
+            acquire(120 * 60 * 1000L) // Safe limit 2 hours
+        }
 
-        Toast.makeText(this, "Bot started", Toast.LENGTH_SHORT).show()
-        botJob = serviceScope.launch {
+        serviceScope.launch(Dispatchers.Main) {
+            Toast.makeText(this@BotService, "Bot started", Toast.LENGTH_SHORT).show()
+        }
 
-            val powerManager = getSystemService(POWER_SERVICE) as PowerManager
-            wakeLock = powerManager.newWakeLock(
-                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
-                "InstaTask::BotWakeLock"
-            )
-            wakeLock?.acquire(10 * 60 * 1000L)
+        val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
+            Log.e("InstaTaskBot", "Caught unhandled coroutine error: ${throwable.localizedMessage}")
+            statsErrorsEncountered++
+            sendStatsUpdate()
+        }
 
-            Toast.makeText(this@BotService, "Bot Started", Toast.LENGTH_SHORT).show()
-            botJob = serviceScope.launch {
-                Log.d("InstaTaskBot", "Workflow started...")
-                for (profile in targetProfiles) {
-                    if (!coroutineContext.isActive) break
-                    currentSourceProfile = profile
+        botJob = serviceScope.launch(exceptionHandler) {
+            Log.d("InstaTaskBot", "Workflow started...")
+
+            for (profile in targetProfiles) {
+                if (!coroutineContext.isActive) break
+                currentSourceProfile = profile
+                sendStatsUpdate()
+
+                try {
+                    processTargetProfile(profile)
+                    randomDelay(8000, 15000)
+                } catch (e: Exception) {
+                    statsErrorsEncountered++
+                    Log.e("InstaTaskBot", "Error processing $profile: ${e.localizedMessage}")
+                    logActionToRoom(profile, "ERROR", e.localizedMessage ?: "Unknown Exception", false)
                     sendStatsUpdate()
-
-                    try {
-                        processTargetProfile(profile)
-                        randomDelay(8000, 15000)
-                    } catch (e: Exception) {
-                        statsErrorsEncountered++
-                        Log.e("InstaTaskBot", "Error processing $profile: ${e.localizedMessage}")
-                        logActionToRoom(
-                            profile,
-                            "ERROR",
-                            e.localizedMessage ?: "Unknown Exception",
-                            false
-                        )
-                        sendStatsUpdate()
-                    }
                 }
-                Log.d("InstaTaskBot", "Workflow finished.")
             }
+
+            Log.d("InstaTaskBot", "Workflow finished.")
+            stopBot()
         }
     }
 
@@ -183,7 +218,7 @@ class BotService : AccessibilityService() {
         currentState = BotState.IDLE
         currentSourceProfile = "None"
         currentTargetProfile = "None"
-        stopForeground(true)
+        stopForeground(STOP_FOREGROUND_REMOVE)
         sendStatsUpdate()
     }
 
@@ -197,7 +232,6 @@ class BotService : AccessibilityService() {
         startActivity(intent)
         randomDelay(5000, 8000)
 
-        // Strict check: Yahan ensure karein ke hum waqai target source profile par hain ya nahi
         if (!isProfileViewVisible()) {
             Log.d("InstaTaskBot", "Target profile view not visible, retrying navigation...")
             startActivity(intent)
@@ -214,10 +248,7 @@ class BotService : AccessibilityService() {
         if (followersNode != null) {
             clickNode(followersNode)
             randomDelay(3000, 5000)
-
-            // Sirf target source profile ke followers list browse hogi
             browseFollowers()
-
             safeGoBack()
             randomDelay(2000, 3000)
         } else {
@@ -255,9 +286,32 @@ class BotService : AccessibilityService() {
         currentState = BotState.BROWSING_FOLLOWERS
         var interactionsCount = 0
         var scrollAttempts = 0
+        var lastProcessedProfile = ""
 
         while (interactionsCount < 20 && scrollAttempts < 15 && coroutineContext.isActive) {
-            // Agar galti se reel ya koi aur screen open ho jaye toh turant back karen
+
+            if (!isFollowersListVisible()) {
+                Log.d("InstaTaskBot", "⚠️ Lost followers list context! Restoring position...")
+                val followersBtn = findFollowerButton()
+                if (followersBtn != null) {
+                    clickNode(followersBtn)
+                    randomDelay(3000, 4000)
+                    continue
+                } else {
+                    safeGoBack()
+                    randomDelay(2000, 3000)
+                    scrollAttempts++
+                    continue
+                }
+            }
+
+            if (checkAndHandlePopup()) {
+                Log.d("InstaTaskBot", "⚠️ Popup detected! Resting safely for 30-40 seconds...")
+                randomDelay(35000, 42000)
+                safeGoBack()
+                continue
+            }
+
             if (isReelVisible()) {
                 safeGoBack()
                 randomDelay(2000, 3000)
@@ -268,22 +322,7 @@ class BotService : AccessibilityService() {
             val nodes = findFollowerNodes()
             if (nodes.isEmpty()) {
                 humanScroll()
-                randomDelay(2000, 3000)
-                scrollAttempts++
-                continue
-            }
-
-            val allVisibleAlreadyProcessed = withContext(Dispatchers.IO) {
-                nodes.all { node ->
-                    val name = node.text?.toString()?.trim() ?: ""
-                    name.isNotEmpty() && database.botDao().isProfileProcessed(name)
-                }
-            }
-
-            if (allVisibleAlreadyProcessed) {
-                Log.d("InstaTaskBot", "Screen profiles already processed. Fast-scrolling...")
-                humanScroll()
-                randomDelay(1000, 1500)
+                randomDelay(2500, 3500)
                 scrollAttempts++
                 continue
             }
@@ -291,19 +330,19 @@ class BotService : AccessibilityService() {
             var foundNew = false
             for (node in nodes) {
                 if (!coroutineContext.isActive) break
-                val name = node.text?.toString() ?: continue
+
+                if (!isFollowersListVisible()) break
+
+                val name = node.text?.toString()?.trim() ?: continue
+                if (name.isEmpty() || name == lastProcessedProfile) continue
 
                 val isAlreadyProcessed = withContext(Dispatchers.IO) {
                     database.botDao().isProfileProcessed(name)
                 }
 
-                if (isAlreadyProcessed) {
-                    Log.d("InstaTaskBot", "Skipping $name - Already saved in Room DB")
-                    continue
-                }
+                if (isAlreadyProcessed) continue
 
                 if (Random.nextFloat() < 0.10f) {
-                    Log.d("InstaTaskBot", "Humanizer: Skipping $name")
                     statsProfilesSkipped++
                     saveProcessedProfileToRoom(name, "SKIPPED_HUMANIZER")
                     sendStatsUpdate()
@@ -313,23 +352,24 @@ class BotService : AccessibilityService() {
                 foundNew = true
                 scrollAttempts = 0
                 currentTargetProfile = name
+                lastProcessedProfile = name
                 statsProfilesScanned++
                 sendStatsUpdate()
 
                 clickNode(node)
-                Log.d("InstaTaskBot", ">>> Opening Profile: $name")
-                randomDelay(3000, 5000)
+                Log.d("InstaTaskBot", ">>> Opening Source Follower: $name")
+                randomDelay(3500, 5000)
 
                 if (isProfileViewVisible()) {
                     if (isPublicProfile() && hasPosts()) {
-                        Log.d("InstaTaskBot", "Interacting with Profile ($name)...")
+                        Log.d("InstaTaskBot", "Interacting exclusively with source follower ($name)...")
                         sendStatsUpdate()
 
                         performInteractions(name)
                         saveProcessedProfileToRoom(name, "INTERACTED")
 
                         interactionsCount++
-                        randomDelay(3000, 5000)
+                        randomDelay(3000, 4500)
                     } else {
                         val reason = "Private or zero posts"
                         Log.d("InstaTaskBot", "Skipping $name - Reason: $reason")
@@ -339,31 +379,41 @@ class BotService : AccessibilityService() {
                         sendStatsUpdate()
                     }
 
-                    // Smart Return: Blind scrolling se bachne ke liye check ke sath wapis aana
                     var exitAttempts = 0
-                    while (!isFollowersListVisible() && exitAttempts < 3 && coroutineContext.isActive) {
+                    while (!isFollowersListVisible() && exitAttempts < 6 && coroutineContext.isActive) {
                         safeGoBack()
                         randomDelay(1500, 2000)
                         exitAttempts++
                     }
+
+                    if (isReelVisible() || isProfileViewVisible()) {
+                        safeGoBack()
+                        randomDelay(1500, 2000)
+                    }
+
+                    if (!isFollowersListVisible()) {
+                        val fBtn = findFollowerButton()
+                        if (fBtn != null) {
+                            clickNode(fBtn)
+                            randomDelay(3000, 4000)
+                        }
+                    }
                 } else if (isReelVisible()) {
                     safeGoBack()
-                    randomDelay(1500, 2000)
+                    randomDelay(2000, 2500)
                 }
-                if (interactionsCount >= 20) break
+
+                break
             }
 
             if (!foundNew) {
                 humanScroll()
-                randomDelay(2000, 3000)
+                randomDelay(2500, 3500)
                 scrollAttempts++
             }
         }
     }
 
-    /**
-     * 🟢 FOLLOW PROFILE FUNCTION (Only follows if it's a Male / DJ profile)
-     */
     private suspend fun followCurrentProfile(username: String): Boolean {
         val bioText = getBioText()
         val isMaleOrDJ = isMaleOrDJProfile(username, bioText)
@@ -384,7 +434,6 @@ class BotService : AccessibilityService() {
 
             if (text.equals("Following", true) || text.equals("Requested", true) ||
                 desc.equals("Following", true) || desc.equals("Requested", true)) {
-                Log.d("InstaTaskBot", "Already followed or requested.")
                 return false
             }
 
@@ -402,13 +451,9 @@ class BotService : AccessibilityService() {
         return false
     }
 
-    /**
-     * 🟢 PERFORM INTERACTIONS (Like, Comment, Story Reaction on ALL profiles, but Follow ONLY on Male/DJ)
-     */
     private suspend fun performInteractions(username: String) {
         currentState = BotState.INTERACTING
 
-        // 1. 24-HOUR LIKES LIMIT CHECK
         val twentyFourHoursAgo = System.currentTimeMillis() - (24 * 60 * 60 * 1000L)
         val recentLikesCount = withContext(Dispatchers.IO) {
             database.botDao().getLikesCountSince(twentyFourHoursAgo)
@@ -421,7 +466,6 @@ class BotService : AccessibilityService() {
             return
         }
 
-        // 2. POST / REEL INTERACTION (Sab profiles par hoga)
         var postOpened = false
         val gridNodes = findPostGridItems()
 
@@ -433,7 +477,6 @@ class BotService : AccessibilityService() {
             if (isContentOpened()) {
                 postOpened = true
             } else {
-                Log.d("InstaTaskBot", "Grid click missed. Pressing back...")
                 safeGoBack()
                 randomDelay(1500, 2000)
             }
@@ -441,7 +484,6 @@ class BotService : AccessibilityService() {
 
         if (postOpened) {
             if (isReelVisible()) {
-                Log.d("InstaTaskBot", "Reel screen active. Commenting and Liking...")
                 commentOnReel(username)
                 val likeBtn = findLikeButton()
                 if (likeBtn != null) {
@@ -451,11 +493,9 @@ class BotService : AccessibilityService() {
                     sendStatsUpdate()
                 }
             } else {
-                Log.d("InstaTaskBot", "Standard Post active. Liking...")
                 val likeBtn = findLikeButton()
                 if (likeBtn != null) {
                     clickNode(likeBtn)
-                    Log.d("InstaTaskBot", ">>> SUCCESS: Post Liked! <<<")
                     statsLikesGiven++
                     logActionToRoom(username, "POST_LIKED", "Post liked successfully", true)
                     sendStatsUpdate()
@@ -463,100 +503,67 @@ class BotService : AccessibilityService() {
                 }
             }
 
-            // Post/Reel se wapis profile par aane ke liye safe check
             var exitAttempts = 0
             while (!isProfileViewVisible() && exitAttempts < 3 && coroutineContext.isActive) {
-                Log.d("InstaTaskBot", "Not on profile yet, forcing back... Attempt: ${exitAttempts + 1}")
                 safeGoBack()
                 randomDelay(1500, 2000)
                 exitAttempts++
             }
         }
 
-        // 3. STORY REACTION EXECUTION (Strict ring check, reply box click & emoji reaction)
         if (isProfileViewVisible()) {
             val avatar = findNodesByViewId("com.instagram.android:id/profile_header_avatar_container").firstOrNull()
                 ?: findNodesByViewId("com.instagram.android:id/row_profile_header_imageview").firstOrNull()
 
-            if (avatar != null) {
-                // Strict check: Dekhein ke story ring active hai ya nahi
-                val hasStory = isStoryRingPresent(avatar)
+            if (avatar != null && isStoryRingPresent(avatar)) {
+                clickNode(avatar)
+                randomDelay(2500, 3500)
 
-                if (hasStory) {
-                    Log.d("InstaTaskBot", "Opening active user story...")
-                    clickNode(avatar)
-                    randomDelay(2500, 3500)
+                if (isStoryViewActive()) {
+                    var reacted = false
+                    val replyBox = findNodeByText("Send message")
+                        ?: findNodeByText("Nachricht senden")
+                        ?: findNodeByText("Antworten")
+                        ?: findNodesByViewId("com.instagram.android:id/story_text_view_field").firstOrNull()
+                        ?: findNodesByViewId("com.instagram.android:id/direct_quick_reply_reel_composer_edittext").firstOrNull()
 
-                    // Agar story khul chuki hai
-                    if (isStoryViewActive()) {
-                        var reacted = false
+                    if (replyBox != null) {
+                        clickNode(replyBox)
+                        randomDelay(1500, 2000)
 
-                        // Step A: "Send message" / reply box par click karen taaki emojis popup hon
-                        val replyBox = findNodeByText("Send message")
-                            ?: findNodeByText("Nachricht senden")
-                            ?: findNodeByText("Antworten")
-                            ?: findNodesByViewId("com.instagram.android:id/story_text_view_field").firstOrNull()
-                            ?: findNodesByViewId("com.instagram.android:id/direct_quick_reply_reel_composer_edittext").firstOrNull()
+                        val emojiReaction = findNodeByText("😂")
+                            ?: findNodeByContentDescription("😂")
+                            ?: findNodeByText("😍")
+                            ?: findNodeByContentDescription("😍")
+                            ?: findNodeByText("🔥")
+                            ?: findNodeByContentDescription("🔥")
 
-                        if (replyBox != null) {
-                            clickNode(replyBox)
-                            randomDelay(1500, 2000) // Emojis popup hone ka wait
-
-                            // Step B: Popup hone walay emojis mein se jo bhi pehle mil jaye us par click karen
-                            val emojiReaction = findNodeByText("😂")
-                                ?: findNodeByContentDescription("😂")
-                                ?: findNodeByText("🎨")
-                                ?: findNodeByContentDescription("🎨")
-                                ?: findNodeByText("😍")
-                                ?: findNodeByContentDescription("😍")
-                                ?: findNodeByText("🤩")
-                                ?: findNodeByContentDescription("🤩")
-                                ?: findNodeByText("👏")
-                                ?: findNodeByContentDescription("👏")
-                                ?: findNodeByText("❤️")
-                                ?: findNodeByText("♥")
-                                ?: findNodeByText("🔥")
-                                ?: findNodeByContentDescription("🔥")
-
-                            if (emojiReaction != null) {
-                                clickNode(emojiReaction)
-                                Log.d("InstaTaskBot", "Story reaction sent successfully!")
-                                statsStoriesReacted++ // Stats update count
-                                logActionToRoom(username, "STORY_REACTION", "Reacted to story with emoji", true)
-                                sendStatsUpdate()
-                                reacted = true
-                                randomDelay(1500, 2000)
-                            }
-                        }
-
-                        if (!reacted) {
-                            Log.d("InstaTaskBot", "Reply box or reaction emojis not found.")
-                        }
-
-                        // Step C: 1 ya 2 second ka delay de kar story se safely wapis profile par aana
-                        randomDelay(1000, 2000)
-                        safeGoBack()
-                        randomDelay(2000, 2500)
-
-                        // Smart check: Ensure karen ke wapis profile view par aa gaye hain aur scroll nahi hua
-                        var safetyAttempts = 0
-                        while (!isProfileViewVisible() && safetyAttempts < 2 && coroutineContext.isActive) {
-                            Log.d("InstaTaskBot", "Adjusting screen position back to profile...")
-                            safeGoBack()
+                        if (emojiReaction != null) {
+                            clickNode(emojiReaction)
+                            statsStoriesReacted++
+                            logActionToRoom(username, "STORY_REACTION", "Reacted to story with emoji", true)
+                            sendStatsUpdate()
+                            reacted = true
                             randomDelay(1500, 2000)
-                            safetyAttempts++
                         }
-                    } else {
-                        Log.d("InstaTaskBot", "Story failed to open, forcing back.")
+                    }
+
+                    randomDelay(1000, 2000)
+                    safeGoBack()
+                    randomDelay(2000, 2500)
+
+                    var safetyAttempts = 0
+                    while (!isProfileViewVisible() && safetyAttempts < 2 && coroutineContext.isActive) {
                         safeGoBack()
+                        randomDelay(1500, 2000)
+                        safetyAttempts++
                     }
                 } else {
-                    Log.d("InstaTaskBot", "No active story ring found for $username. Skipping story.")
+                    safeGoBack()
                 }
             }
         }
 
-        // 4. FOLLOW PROFILE INTEGRATION (Sirf Male/DJ profiles ke liye chalega)
         if (isProfileViewVisible()) {
             val didFollow = followCurrentProfile(username)
             if (didFollow) {
@@ -568,20 +575,15 @@ class BotService : AccessibilityService() {
             }
         }
 
-        // Fallback: Agar kisi wajah se profile screen par wapis na pohncha ho
         if (!isProfileViewVisible()) {
             safeGoBack()
             randomDelay(1500, 2000)
         }
     }
 
-
-    // Check karta hai ke kya user ki story ka active ring maujood hai
     private fun isStoryRingPresent(avatarNode: AccessibilityNodeInfo): Boolean {
         val desc = avatarNode.contentDescription?.toString()?.lowercase() ?: ""
-        if (desc.contains("story", true) || desc.contains("active", true)) {
-            return true
-        }
+        if (desc.contains("story", true) || desc.contains("active", true)) return true
 
         val root = rootInActiveWindow ?: return false
         val queue = mutableListOf(avatarNode)
@@ -589,26 +591,19 @@ class BotService : AccessibilityService() {
             val node = queue.removeAt(0)
             if (node.className?.toString()?.contains("ImageView", true) == true) {
                 val nodeDesc = node.contentDescription?.toString()?.lowercase() ?: ""
-                if (nodeDesc.contains("story", true)) {
-                    return true
-                }
+                if (nodeDesc.contains("story", true)) return true
             }
             for (i in 0 until node.childCount) {
                 node.getChild(i)?.let { queue.add(it) }
             }
         }
-
-        // Fallback: Agar ring explicitly match na ho lekin avatar clickable ho aur story ki umeed ho
         return avatarNode.isClickable
     }
 
-
-    // Check karta hai ke kya hum waqai Story screen par hain
     private fun isStoryViewActive(): Boolean {
         return findNodesByViewId("com.instagram.android:id/story_viewer_container").isNotEmpty() ||
                 findNodesByViewId("com.instagram.android:id/reel_viewer_root_view").isNotEmpty() ||
                 findNodeByText("Reply") != null ||
-                findNodeByText("Antworten") != null ||
                 findNodeByText("Send message") != null
     }
 
@@ -622,7 +617,6 @@ class BotService : AccessibilityService() {
             val text = node.text?.toString() ?: ""
             val desc = node.contentDescription?.toString() ?: ""
 
-            // Agar screen par followers keyword mil jaye toh matlab list visible hai
             if (keywords.any { text.contains(it, true) || desc.contains(it, true) }) {
                 return true
             }
@@ -634,33 +628,22 @@ class BotService : AccessibilityService() {
         return false
     }
 
-    /**
-     * 🟢 MALE / DJ CHECKER (Only used inside follow logic now)
-     */
     private fun isMaleOrDJProfile(username: String, bio: String): Boolean {
         val combinedText = "$username $bio".lowercase()
 
-        // Strict Negative Filters (In mein se kuch bhi match ho toh follow nahi karega)
         val femaleAndBusinessKeywords = listOf(
             "female", "girl", "woman", "mom", "she/her", "queen", "model",
             "makeup", "beauty", "fashionista", "lady", "wife", "sister",
             "salon", "lashes", "nails", "boutique", "hijab", "mua", "makeupartist"
         )
-        if (femaleAndBusinessKeywords.any { combinedText.contains(it) }) {
-            return false
-        }
+        if (femaleAndBusinessKeywords.any { combinedText.contains(it) }) return false
 
-        // Positive Keywords (DJ, Music, Producer, etc.)
         val djOrMusicKeywords = listOf(
             "dj", "producer", "music", "remix", "beatmaker", "sound", "artist",
             "house", "techno", "edm", "label", "track", "records", "audio", "djane"
         )
 
-        if (djOrMusicKeywords.any { combinedText.contains(it) }) {
-            return true
-        }
-
-        return true
+        return djOrMusicKeywords.any { combinedText.contains(it) }
     }
 
     private fun findPostGridItems(): List<AccessibilityNodeInfo> {
@@ -696,7 +679,6 @@ class BotService : AccessibilityService() {
     private fun isContentOpened(): Boolean {
         return findLikeButton() != null ||
                 findNodeByContentDescription("Comment") != null ||
-                findNodeByContentDescription("Kommentieren") != null ||
                 isReelVisible()
     }
 
@@ -707,8 +689,7 @@ class BotService : AccessibilityService() {
             val node = queue.removeAt(0)
             val desc = node.contentDescription?.toString() ?: ""
 
-            if ((desc.equals("Like", true) || desc.equals("Gefällt mir", true) || desc.startsWith("Like", true)) &&
-                !desc.contains("Liked", true)) {
+            if ((desc.equals("Like", true) || desc.startsWith("Like", true)) && !desc.contains("Liked", true)) {
                 return if (node.isClickable) node else node.parent
             }
 
@@ -726,14 +707,11 @@ class BotService : AccessibilityService() {
         return null
     }
 
-    // 🟢 REEL COMMENT AUTOMATION
     private suspend fun commentOnReel(username: String) {
         val commentBtn = findNodeByContentDescription("Comment")
-            ?: findNodeByContentDescription("Kommentieren")
             ?: findNodesByViewId("com.instagram.android:id/comment_button").firstOrNull()
 
         if (commentBtn != null) {
-            Log.d("InstaTaskBot", "Opening Reel comment section...")
             clickNode(commentBtn)
             randomDelay(3000, 4000)
 
@@ -749,9 +727,7 @@ class BotService : AccessibilityService() {
                 if (input != null) break
             }
 
-            if (input == null) {
-                input = findNodeByClass("android.widget.EditText")
-            }
+            if (input == null) input = findNodeByClass("android.widget.EditText")
 
             if (input != null) {
                 clickNode(input)
@@ -769,7 +745,6 @@ class BotService : AccessibilityService() {
                 randomDelay(2000, 3000)
 
                 val postBtn = findNodeByText("Post")
-                    ?: findNodeByText("Posten")
                     ?: findNodesByViewId("com.instagram.android:id/layout_comment_thread_post_button").firstOrNull()
                     ?: findNodesByViewId("com.instagram.android:id/comment_post_button").firstOrNull()
 
@@ -886,6 +861,26 @@ class BotService : AccessibilityService() {
         dispatchGesture(GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 100)).build(), null, null)
     }
 
+    private fun checkAndHandlePopup(): Boolean {
+        val blockKeywords = listOf("try again later", "action blocked", "restriction", "feedback required", "error")
+        val root = rootInActiveWindow ?: return false
+        val queue = mutableListOf(root)
+
+        while (queue.isNotEmpty()) {
+            val node = queue.removeAt(0)
+            val text = node.text?.toString()?.lowercase() ?: ""
+
+            if (blockKeywords.any { text.contains(it) }) {
+                Log.w("InstaTaskBot", "⚠️ Restriction detected: $text. Pausing bot.")
+                return true
+            }
+            for (i in 0 until node.childCount) {
+                node.getChild(i)?.let { queue.add(it) }
+            }
+        }
+        return false
+    }
+
     private fun findNodeByText(t: String) = rootInActiveWindow?.findAccessibilityNodeInfosByText(t)?.firstOrNull()
     private fun findNodesByViewId(id: String) = rootInActiveWindow?.findAccessibilityNodeInfosByViewId(id) ?: emptyList<AccessibilityNodeInfo>()
     private fun findNodeByContentDescription(d: String): AccessibilityNodeInfo? {
@@ -899,8 +894,41 @@ class BotService : AccessibilityService() {
         return null
     }
 
-    private fun findFollowerNodes() = findNodesByViewId("com.instagram.android:id/follow_list_username")
-    private fun isPublicProfile() = findNodeByText("This account is private") == null && findNodeByText("Dieses Konto ist privat") == null && findNodeByText("Private") == null
+    private fun findFollowerNodes(): List<AccessibilityNodeInfo> {
+        val potentialIds = listOf(
+            "com.instagram.android:id/follow_list_username",
+            "com.instagram.android:id/row_user_username",
+            "com.instagram.android:id/follow_user_row_username",
+            "com.instagram.android:id/row_user_primary_name"
+        )
+
+        for (id in potentialIds) {
+            val nodes = findNodesByViewId(id)
+            if (nodes.isNotEmpty()) return nodes
+        }
+
+        val root = rootInActiveWindow ?: return emptyList()
+        val list = mutableListOf<AccessibilityNodeInfo>()
+        val queue = mutableListOf(root)
+
+        while (queue.isNotEmpty()) {
+            val node = queue.removeAt(0)
+            if (node.className == "android.widget.TextView") {
+                val text = node.text?.toString()?.trim() ?: ""
+                if (text.isNotEmpty() && !text.contains(" ") && text.length < 30 &&
+                    !text.equals("Follow", true) && !text.equals("Following", true) &&
+                    !text.equals("Followers", true)) {
+                    list.add(node)
+                }
+            }
+            for (i in 0 until node.childCount) {
+                node.getChild(i)?.let { queue.add(it) }
+            }
+        }
+        return list
+    }
+
+    private fun isPublicProfile() = findNodeByText("This account is private") == null && findNodeByText("Private") == null
     private fun isProfileViewVisible() = findNodesByViewId("com.instagram.android:id/profile_header_container").isNotEmpty() ||
             findNodesByViewId("com.instagram.android:id/profile_header_bio_text").isNotEmpty()
     private fun isReelVisible() = findNodesByViewId("com.instagram.android:id/reels_video_container").isNotEmpty()
