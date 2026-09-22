@@ -3,6 +3,7 @@ package com.dopamin.instatask
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Path
@@ -28,11 +29,10 @@ import androidx.core.app.NotificationCompat
 import kotlin.coroutines.coroutineContext
 
 /**
- * InstaTask Bot Service - Fixed Background Execution Engine
+ * InstaTask Bot Service - Clean, Standalone & Optimized Engine
  */
 class BotService : AccessibilityService() {
 
-    // 🟢 FIX 1: Default/IO Coroutine Scope to avoid Main Thread freezing in background
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var botJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
@@ -40,9 +40,11 @@ class BotService : AccessibilityService() {
     // Room Database Instance
     private lateinit var database: AppDatabase
 
-    private val targetProfiles = listOf(
-        "houseworksrec", "loudkult", "tomorrowland_music", "kontorrecords", "sirupmusic",
-    )
+    // Dynamic Lists & Configs
+    private var targetProfiles = mutableListOf<String>()
+    private var targetHashtags = mutableListOf<String>()
+    private var isProfileLikingEnabled = true
+    private var isHashtagLikingEnabled = false
 
     private enum class BotState { IDLE, NAVIGATING, BROWSING_FOLLOWERS, ANALYZING_PROFILE, INTERACTING }
     private var currentState = BotState.IDLE
@@ -70,7 +72,9 @@ class BotService : AccessibilityService() {
         database = AppDatabase.getDatabase(this)
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        // Kept lightweight to save UI thread performance
+    }
 
     override fun onInterrupt() {
         stopBot()
@@ -78,7 +82,10 @@ class BotService : AccessibilityService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            "START_BOT" -> startBot()
+            "START_BOT" -> {
+                loadUserSettings()
+                startBot()
+            }
             "STOP_BOT" -> stopBot()
             "CLEAR_STATS" -> clearDatabaseStats()
         }
@@ -91,17 +98,16 @@ class BotService : AccessibilityService() {
         Log.d("InstaTaskBot", "Service Connected to Foreground")
     }
 
-    override fun onUnbind(intent: Intent?): Boolean {
-        Log.w("InstaTaskBot", "⚠️ Service is being unbound by OS! Cleaning up...")
-        stopBot()
-        // true return karne se jab OS dobara active hoga tou onRebind call hoga
-        return true
-    }
+    private fun loadUserSettings() {
+        val prefs = getSharedPreferences("InstaTaskPrefs", Context.MODE_PRIVATE)
+        val profilesString = prefs.getString("SOURCE_PROFILES", "houseworksrec,loudkult,tomorrowland_music,kontorrecords,sirupmusic") ?: ""
+        val hashtagsString = prefs.getString("TARGET_HASHTAGS", "housemusic,djlife") ?: ""
 
-    override fun onRebind(intent: Intent?) {
-        super.onRebind(intent)
-        Log.d("InstaTaskBot", "🔄 Service Rebound Successfully!")
-        startForegroundServiceNotification()
+        targetProfiles = profilesString.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
+        targetHashtags = hashtagsString.split(",").map { it.trim().removePrefix("#") }.filter { it.isNotEmpty() }.toMutableList()
+
+        isProfileLikingEnabled = prefs.getBoolean("ENABLE_PROFILE_LIKING", true)
+        isHashtagLikingEnabled = prefs.getBoolean("ENABLE_HASHTAG_LIKING", false)
     }
 
     private fun clearDatabaseStats() {
@@ -144,7 +150,6 @@ class BotService : AccessibilityService() {
             .setOngoing(true)
             .build()
 
-        // 🟢 FIX 2: Dynamic Foreground Type support for Android 14+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(101, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         } else {
@@ -155,25 +160,14 @@ class BotService : AccessibilityService() {
     private fun startBot() {
         if (botJob?.isActive == true) return
 
-        // 🟢 1. KeepAlive Engine Service Start Karein
-        val keepAliveIntent = Intent(this, KeepAliveService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(keepAliveIntent)
-        } else {
-            startService(keepAliveIntent)
-        }
-
-
-
         startForegroundServiceNotification()
 
-        // 🟢 FIX 3: PARTIAL_WAKE_LOCK to keep CPU awake even if Screen turns off
         val powerManager = getSystemService(POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
             "InstaTask::BotCPUWakeLock"
         ).apply {
-            acquire(120 * 60 * 1000L) // Safe limit 2 hours
+            acquire(120 * 60 * 1000L) // 2 Hours max lock
         }
 
         serviceScope.launch(Dispatchers.Main) {
@@ -189,19 +183,40 @@ class BotService : AccessibilityService() {
         botJob = serviceScope.launch(exceptionHandler) {
             Log.d("InstaTaskBot", "Workflow started...")
 
-            for (profile in targetProfiles) {
-                if (!coroutineContext.isActive) break
-                currentSourceProfile = profile
-                sendStatsUpdate()
-
-                try {
-                    processTargetProfile(profile)
-                    randomDelay(8000, 15000)
-                } catch (e: Exception) {
-                    statsErrorsEncountered++
-                    Log.e("InstaTaskBot", "Error processing $profile: ${e.localizedMessage}")
-                    logActionToRoom(profile, "ERROR", e.localizedMessage ?: "Unknown Exception", false)
+            // Workflow Mode 1: Target Profiles
+            if (isProfileLikingEnabled && targetProfiles.isNotEmpty()) {
+                for (profile in targetProfiles) {
+                    if (!coroutineContext.isActive) break
+                    currentSourceProfile = profile
                     sendStatsUpdate()
+
+                    try {
+                        processTargetProfile(profile)
+                        randomDelay(8000, 15000)
+                    } catch (e: Exception) {
+                        statsErrorsEncountered++
+                        Log.e("InstaTaskBot", "Error processing $profile: ${e.localizedMessage}")
+                        logActionToRoom(profile, "ERROR", e.localizedMessage ?: "Unknown Exception", false)
+                        sendStatsUpdate()
+                    }
+                }
+            }
+
+            // Workflow Mode 2: Hashtags
+            if (isHashtagLikingEnabled && targetHashtags.isNotEmpty()) {
+                for (hashtag in targetHashtags) {
+                    if (!coroutineContext.isActive) break
+                    currentSourceProfile = "#$hashtag"
+                    sendStatsUpdate()
+
+                    try {
+                        processHashtagWorkflow(hashtag)
+                        randomDelay(8000, 15000)
+                    } catch (e: Exception) {
+                        statsErrorsEncountered++
+                        Log.e("InstaTaskBot", "Error processing hashtag #$hashtag: ${e.localizedMessage}")
+                        sendStatsUpdate()
+                    }
                 }
             }
 
@@ -222,6 +237,38 @@ class BotService : AccessibilityService() {
         sendStatsUpdate()
     }
 
+    // --- HASHTAG WORKFLOW ---
+    private suspend fun processHashtagWorkflow(tag: String) {
+        currentState = BotState.NAVIGATING
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("instagram://tag?name=$tag")).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+        startActivity(intent)
+        randomDelay(5000, 8000)
+
+        val gridNodes = findPostGridItems()
+        if (gridNodes.isNotEmpty()) {
+            clickNode(gridNodes[0])
+            randomDelay(3000, 4500)
+
+            var hashtagInteracted = 0
+            while (hashtagInteracted < 10 && coroutineContext.isActive) {
+                val likeBtn = findLikeButton()
+                if (likeBtn != null) {
+                    clickNode(likeBtn)
+                    statsLikesGiven++
+                    sendStatsUpdate()
+                    randomDelay(2000, 3000)
+                }
+                humanScroll()
+                hashtagInteracted++
+                randomDelay(3000, 5000)
+            }
+        }
+        safeGoBack()
+    }
+
+    // --- PROFILE WORKFLOW ---
     private suspend fun processTargetProfile(username: String) {
         currentState = BotState.NAVIGATING
         Log.d("InstaTaskBot", "Navigating to target source profile: $username")
@@ -256,30 +303,6 @@ class BotService : AccessibilityService() {
             logActionToRoom(username, "SOURCE_ERROR", "Follower button not found on target profile", false)
             sendStatsUpdate()
         }
-    }
-
-    private fun findFollowerButton(): AccessibilityNodeInfo? {
-        val ids = listOf(
-            "com.instagram.android:id/row_profile_header_followers_container",
-            "com.instagram.android:id/row_profile_header_container_followers",
-            "com.instagram.android:id/row_profile_header_textview_followers_count"
-        )
-        for (id in ids) {
-            val nodes = findNodesByViewId(id)
-            if (nodes.isNotEmpty()) return nodes[0]
-        }
-        val keywords = listOf("followers", "follower", "Followers", "Follower", "Abonnenten")
-        val root = rootInActiveWindow ?: return null
-        val queue = mutableListOf(root)
-        while (queue.isNotEmpty()) {
-            val node = queue.removeAt(0)
-            val text = node.text?.toString() ?: ""
-            if (keywords.any { text.contains(it, true) }) return node
-            for (i in 0 until node.childCount) {
-                node.getChild(i)?.let { queue.add(it) }
-            }
-        }
-        return null
     }
 
     private suspend fun browseFollowers() {
@@ -333,7 +356,7 @@ class BotService : AccessibilityService() {
 
                 if (!isFollowersListVisible()) break
 
-                val name = node.text?.toString()?.trim() ?: continue
+                val name = try { node.text?.toString()?.trim() ?: "" } catch (e: Exception) { "" }
                 if (name.isEmpty() || name == lastProcessedProfile) continue
 
                 val isAlreadyProcessed = withContext(Dispatchers.IO) {
@@ -429,8 +452,8 @@ class BotService : AccessibilityService() {
 
         while (queue.isNotEmpty()) {
             val node = queue.removeAt(0)
-            val text = node.text?.toString() ?: ""
-            val desc = node.contentDescription?.toString() ?: ""
+            val text = try { node.text?.toString() ?: "" } catch (e: Exception) { "" }
+            val desc = try { node.contentDescription?.toString() ?: "" } catch (e: Exception) { "" }
 
             if (text.equals("Following", true) || text.equals("Requested", true) ||
                 desc.equals("Following", true) || desc.equals("Requested", true)) {
@@ -445,7 +468,7 @@ class BotService : AccessibilityService() {
             }
 
             for (i in 0 until node.childCount) {
-                node.getChild(i)?.let { queue.add(it) }
+                try { node.getChild(i)?.let { queue.add(it) } } catch (e: Exception) {}
             }
         }
         return false
@@ -582,22 +605,26 @@ class BotService : AccessibilityService() {
     }
 
     private fun isStoryRingPresent(avatarNode: AccessibilityNodeInfo): Boolean {
-        val desc = avatarNode.contentDescription?.toString()?.lowercase() ?: ""
-        if (desc.contains("story", true) || desc.contains("active", true)) return true
+        return try {
+            val desc = avatarNode.contentDescription?.toString()?.lowercase() ?: ""
+            if (desc.contains("story", true) || desc.contains("active", true)) return true
 
-        val root = rootInActiveWindow ?: return false
-        val queue = mutableListOf(avatarNode)
-        while (queue.isNotEmpty()) {
-            val node = queue.removeAt(0)
-            if (node.className?.toString()?.contains("ImageView", true) == true) {
-                val nodeDesc = node.contentDescription?.toString()?.lowercase() ?: ""
-                if (nodeDesc.contains("story", true)) return true
+            val root = rootInActiveWindow ?: return false
+            val queue = mutableListOf(avatarNode)
+            while (queue.isNotEmpty()) {
+                val node = queue.removeAt(0)
+                if (node.className?.toString()?.contains("ImageView", true) == true) {
+                    val nodeDesc = node.contentDescription?.toString()?.lowercase() ?: ""
+                    if (nodeDesc.contains("story", true)) return true
+                }
+                for (i in 0 until node.childCount) {
+                    try { node.getChild(i)?.let { queue.add(it) } } catch (e: Exception) {}
+                }
             }
-            for (i in 0 until node.childCount) {
-                node.getChild(i)?.let { queue.add(it) }
-            }
+            avatarNode.isClickable
+        } catch (e: Exception) {
+            false
         }
-        return avatarNode.isClickable
     }
 
     private fun isStoryViewActive(): Boolean {
@@ -614,15 +641,15 @@ class BotService : AccessibilityService() {
 
         while (queue.isNotEmpty()) {
             val node = queue.removeAt(0)
-            val text = node.text?.toString() ?: ""
-            val desc = node.contentDescription?.toString() ?: ""
+            val text = try { node.text?.toString() ?: "" } catch (e: Exception) { "" }
+            val desc = try { node.contentDescription?.toString() ?: "" } catch (e: Exception) { "" }
 
             if (keywords.any { text.contains(it, true) || desc.contains(it, true) }) {
                 return true
             }
 
             for (i in 0 until node.childCount) {
-                node.getChild(i)?.let { queue.add(it) }
+                try { node.getChild(i)?.let { queue.add(it) } } catch (e: Exception) {}
             }
         }
         return false
@@ -664,13 +691,13 @@ class BotService : AccessibilityService() {
         while (queue.isNotEmpty()) {
             val node = queue.removeAt(0)
             if (node.className == "android.widget.ImageView" && node.isClickable) {
-                val desc = node.contentDescription?.toString() ?: ""
+                val desc = try { node.contentDescription?.toString() ?: "" } catch (e: Exception) { "" }
                 if (!desc.contains("profile", true) && !desc.contains("avatar", true)) {
                     list.add(node)
                 }
             }
             for (i in 0 until node.childCount) {
-                node.getChild(i)?.let { queue.add(it) }
+                try { node.getChild(i)?.let { queue.add(it) } } catch (e: Exception) {}
             }
         }
         return list
@@ -687,7 +714,7 @@ class BotService : AccessibilityService() {
         val queue = mutableListOf(root)
         while (queue.isNotEmpty()) {
             val node = queue.removeAt(0)
-            val desc = node.contentDescription?.toString() ?: ""
+            val desc = try { node.contentDescription?.toString() ?: "" } catch (e: Exception) { "" }
 
             if ((desc.equals("Like", true) || desc.startsWith("Like", true)) && !desc.contains("Liked", true)) {
                 return if (node.isClickable) node else node.parent
@@ -701,7 +728,7 @@ class BotService : AccessibilityService() {
             if (ids.contains(node.viewIdResourceName)) return node
 
             for (i in 0 until node.childCount) {
-                node.getChild(i)?.let { queue.add(it) }
+                try { node.getChild(i)?.let { queue.add(it) } } catch (e: Exception) {}
             }
         }
         return null
@@ -828,7 +855,7 @@ class BotService : AccessibilityService() {
             val node = queue.removeAt(0)
             if (node.className?.toString() == className) return node
             for (i in 0 until node.childCount) {
-                node.getChild(i)?.let { queue.add(it) }
+                try { node.getChild(i)?.let { queue.add(it) } } catch (e: Exception) {}
             }
         }
         return null
@@ -847,18 +874,22 @@ class BotService : AccessibilityService() {
     }
 
     private fun clickNode(node: AccessibilityNodeInfo) {
-        var n: AccessibilityNodeInfo? = node
-        while (n != null) {
-            if (n.isClickable) {
-                n.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                return
+        try {
+            var n: AccessibilityNodeInfo? = node
+            while (n != null) {
+                if (n.isClickable) {
+                    n.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    return
+                }
+                n = n.parent
             }
-            n = n.parent
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            val path = Path().apply { moveTo(rect.centerX().toFloat(), rect.centerY().toFloat()) }
+            dispatchGesture(GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 100)).build(), null, null)
+        } catch (e: Exception) {
+            Log.e("InstaTaskBot", "Safely caught click exception: ${e.localizedMessage}")
         }
-        val rect = Rect()
-        node.getBoundsInScreen(rect)
-        val path = Path().apply { moveTo(rect.centerX().toFloat(), rect.centerY().toFloat()) }
-        dispatchGesture(GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 100)).build(), null, null)
     }
 
     private fun checkAndHandlePopup(): Boolean {
@@ -868,28 +899,67 @@ class BotService : AccessibilityService() {
 
         while (queue.isNotEmpty()) {
             val node = queue.removeAt(0)
-            val text = node.text?.toString()?.lowercase() ?: ""
+            val text = try { node.text?.toString()?.lowercase() ?: "" } catch (e: Exception) { "" }
 
             if (blockKeywords.any { text.contains(it) }) {
                 Log.w("InstaTaskBot", "⚠️ Restriction detected: $text. Pausing bot.")
                 return true
             }
             for (i in 0 until node.childCount) {
-                node.getChild(i)?.let { queue.add(it) }
+                try { node.getChild(i)?.let { queue.add(it) } } catch (e: Exception) {}
             }
         }
         return false
     }
 
-    private fun findNodeByText(t: String) = rootInActiveWindow?.findAccessibilityNodeInfosByText(t)?.firstOrNull()
-    private fun findNodesByViewId(id: String) = rootInActiveWindow?.findAccessibilityNodeInfosByViewId(id) ?: emptyList<AccessibilityNodeInfo>()
+    private fun findNodeByText(t: String): AccessibilityNodeInfo? {
+        return try {
+            rootInActiveWindow?.findAccessibilityNodeInfosByText(t)?.firstOrNull()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun findNodesByViewId(id: String): List<AccessibilityNodeInfo> {
+        return try {
+            rootInActiveWindow?.findAccessibilityNodeInfosByViewId(id) ?: emptyList()
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
     private fun findNodeByContentDescription(d: String): AccessibilityNodeInfo? {
         val root = rootInActiveWindow ?: return null
         val q = mutableListOf(root)
         while (q.isNotEmpty()) {
             val n = q.removeAt(0)
-            if (n.contentDescription?.toString()?.contains(d, true) == true) return n
-            for (i in 0 until n.childCount) n.getChild(i)?.let { q.add(it) }
+            val desc = try { n.contentDescription?.toString() ?: "" } catch (e: Exception) { "" }
+            if (desc.contains(d, true)) return n
+            for (i in 0 until n.childCount) try { n.getChild(i)?.let { q.add(it) } } catch (e: Exception) {}
+        }
+        return null
+    }
+
+    private fun findFollowerButton(): AccessibilityNodeInfo? {
+        val ids = listOf(
+            "com.instagram.android:id/row_profile_header_followers_container",
+            "com.instagram.android:id/row_profile_header_container_followers",
+            "com.instagram.android:id/row_profile_header_textview_followers_count"
+        )
+        for (id in ids) {
+            val nodes = findNodesByViewId(id)
+            if (nodes.isNotEmpty()) return nodes[0]
+        }
+        val keywords = listOf("followers", "follower", "Followers", "Follower", "Abonnenten")
+        val root = rootInActiveWindow ?: return null
+        val queue = mutableListOf(root)
+        while (queue.isNotEmpty()) {
+            val node = queue.removeAt(0)
+            val text = try { node.text?.toString() ?: "" } catch (e: Exception) { "" }
+            if (keywords.any { text.contains(it, true) }) return node
+            for (i in 0 until node.childCount) {
+                try { node.getChild(i)?.let { queue.add(it) } } catch (e: Exception) {}
+            }
         }
         return null
     }
@@ -914,7 +984,7 @@ class BotService : AccessibilityService() {
         while (queue.isNotEmpty()) {
             val node = queue.removeAt(0)
             if (node.className == "android.widget.TextView") {
-                val text = node.text?.toString()?.trim() ?: ""
+                val text = try { node.text?.toString()?.trim() ?: "" } catch (e: Exception) { "" }
                 if (text.isNotEmpty() && !text.contains(" ") && text.length < 30 &&
                     !text.equals("Follow", true) && !text.equals("Following", true) &&
                     !text.equals("Followers", true)) {
@@ -922,7 +992,7 @@ class BotService : AccessibilityService() {
                 }
             }
             for (i in 0 until node.childCount) {
-                node.getChild(i)?.let { queue.add(it) }
+                try { node.getChild(i)?.let { queue.add(it) } } catch (e: Exception) {}
             }
         }
         return list
