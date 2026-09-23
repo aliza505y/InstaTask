@@ -123,7 +123,7 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("InstaTaskPrefs", Context.MODE_PRIVATE)
         etProfiles.setText(prefs.getString("SOURCE_PROFILES", ""))
         etHashtags.setText(prefs.getString("TARGET_HASHTAGS", ""))
-        switchProfile.isChecked = prefs.getBoolean("ENABLE_PROFILE_LIKING", true)
+        switchProfile.isChecked = prefs.getBoolean("ENABLE_PROFILE_LIKING", false)
         switchHashtag.isChecked = prefs.getBoolean("ENABLE_HASHTAG_LIKING", false)
     }
 

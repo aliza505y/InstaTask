@@ -81,7 +81,8 @@
             android:layout_height="wrap_content"
             android:text="Enable Hashtag-Based Liking"
             android:checked="false"
-            android:textSize="14sp" />
+            android:textSize="14sp"
+            tools:ignore="UseSwitchCompatOrMaterialXml" />
 
         <EditText
             android:id="@+id/etTargetHashtags"

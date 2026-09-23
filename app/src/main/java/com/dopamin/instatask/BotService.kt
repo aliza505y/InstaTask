@@ -29,18 +29,20 @@ import androidx.core.app.NotificationCompat
 import kotlin.coroutines.coroutineContext
 
 /**
- * InstaTask Bot Service - Clean, Standalone & Optimized Engine
+ * InstaTask Bot Service - Clean, Resilient & Auto-Pausing Engine
  */
 class BotService : AccessibilityService() {
 
+    // Background Thread Coroutine Scope for smooth UI execution
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var botJob: Job? = null
+    private var watchdogJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
-    // Room Database Instance
+    // Room Database Instance for storing activity history
     private lateinit var database: AppDatabase
 
-    // Dynamic Lists & Configs
+    // Dynamic Lists & Configs loaded from SharedPreferences
     private var targetProfiles = mutableListOf<String>()
     private var targetHashtags = mutableListOf<String>()
     private var isProfileLikingEnabled = true
@@ -49,7 +51,7 @@ class BotService : AccessibilityService() {
     private enum class BotState { IDLE, NAVIGATING, BROWSING_FOLLOWERS, ANALYZING_PROFILE, INTERACTING }
     private var currentState = BotState.IDLE
 
-    // Live Tracker Metrics
+    // Live Tracker Metrics for UI Dashboard
     private var currentSourceProfile = "None"
     private var currentTargetProfile = "None"
     private var statsProfilesScanned = 0
@@ -60,6 +62,7 @@ class BotService : AccessibilityService() {
     private var statsProfilesSkipped = 0
     private var statsErrorsEncountered = 0
 
+    // Automated Reel Comments List
     private val reelComments = listOf(
         "Banger track! 🎶🔥",
         "Absolute vibe! 🙌🎧",
@@ -73,7 +76,7 @@ class BotService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // Kept lightweight to save UI thread performance
+        // Kept lightweight to prevent UI thread lagging or memory leaks
     }
 
     override fun onInterrupt() {
@@ -98,6 +101,9 @@ class BotService : AccessibilityService() {
         Log.d("InstaTaskBot", "Service Connected to Foreground")
     }
 
+    /**
+     * 🟢 STEP 1: SharedPreferences se User ki Input values read karna (Profiles, Hashtags, Switches)
+     */
     private fun loadUserSettings() {
         val prefs = getSharedPreferences("InstaTaskPrefs", Context.MODE_PRIVATE)
         val profilesString = prefs.getString("SOURCE_PROFILES", "houseworksrec,loudkult,tomorrowland_music,kontorrecords,sirupmusic") ?: ""
@@ -110,6 +116,9 @@ class BotService : AccessibilityService() {
         isHashtagLikingEnabled = prefs.getBoolean("ENABLE_HASHTAG_LIKING", false)
     }
 
+    /**
+     * Room Database se saare stats clear karna
+     */
     private fun clearDatabaseStats() {
         serviceScope.launch(Dispatchers.IO) {
             database.botDao().clearAllLogs()
@@ -130,6 +139,9 @@ class BotService : AccessibilityService() {
         }
     }
 
+    /**
+     * 🟢 STEP 2: Persistent Foreground Service Notification setup (Android OS Process Killing se bachata ha)
+     */
     @SuppressLint("ForegroundServiceType")
     private fun startForegroundServiceNotification() {
         val channelId = "bot_foreground_channel"
@@ -157,33 +169,63 @@ class BotService : AccessibilityService() {
         }
     }
 
+    /**
+     * 🟢 STEP 3: Bot Engine ko Start karna + CPU WakeLock + Exception Guard
+     */
     private fun startBot() {
         if (botJob?.isActive == true) return
 
         startForegroundServiceNotification()
 
+        // CPU ko sleep state mein jane se rokne ke liye PARTIAL_WAKE_LOCK acquire kar rahe hain
         val powerManager = getSystemService(POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
             "InstaTask::BotCPUWakeLock"
         ).apply {
-            acquire(120 * 60 * 1000L) // 2 Hours max lock
+            acquire(120 * 60 * 1000L) // 2 hours safety lock
         }
 
         serviceScope.launch(Dispatchers.Main) {
-            Toast.makeText(this@BotService, "Bot started", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this@BotService, "Bot Engine Started!", Toast.LENGTH_SHORT).show()
         }
 
+        // Unhandled Exception Guard: Agar koi crash aaye tou bot auto-recover kare
         val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
-            Log.e("InstaTaskBot", "Caught unhandled coroutine error: ${throwable.localizedMessage}")
+            Log.e("InstaTaskBot", "Caught error, recovering automatically: ${throwable.localizedMessage}")
             statsErrorsEncountered++
             sendStatsUpdate()
+
+            // 5 seconds pause le kar engine restart karega
+            serviceScope.launch {
+                delay(5000)
+                if (currentState != BotState.IDLE) {
+                    startBotWorkflow()
+                }
+            }
         }
 
-        botJob = serviceScope.launch(exceptionHandler) {
-            Log.d("InstaTaskBot", "Workflow started...")
+        // Watchdog Heartbeat start karein
+        startWatchdog()
 
-            // Workflow Mode 1: Target Profiles
+        botJob = serviceScope.launch(exceptionHandler) {
+            startBotWorkflow()
+        }
+    }
+
+    /**
+     * 🟢 STEP 4: Smart Auto-Pause & Resume Execution Loop
+     * Har 3 profiles/hashtags ke baad 1 minute ka REST/PAUSE lega aur phir AUTOMATIC RESUME karega.
+     */
+    private suspend fun startBotWorkflow() {
+        Log.d("InstaTaskBot", "Executing workflow loop with Auto-Pause protection...")
+
+        var processedCounter = 0 // Kitne profiles/hashtags process ho chukay hain unka tracker
+
+        // Infinite Loop: Jab tak user "Stop Bot" na dabaye, ye system ko ALIVE rakhega
+        while (coroutineContext.isActive) {
+
+            // 🔴 WORKFLOW MODE 1: TARGET PROFILES
             if (isProfileLikingEnabled && targetProfiles.isNotEmpty()) {
                 for (profile in targetProfiles) {
                     if (!coroutineContext.isActive) break
@@ -192,17 +234,29 @@ class BotService : AccessibilityService() {
 
                     try {
                         processTargetProfile(profile)
-                        randomDelay(8000, 15000)
+                        processedCounter++
+
+                        // ⏸️ AUTO-PAUSE RULE: Har 3 profiles ke baad 1 minute ka complete REST gap
+                        if (processedCounter % 3 == 0) {
+                            Log.d("InstaTaskBot", "⏸️ Auto-Pause: Resting for 1 minute to keep service alive and safe...")
+                            currentSourceProfile = "Resting (1 min)..."
+                            sendStatsUpdate()
+                            randomDelay(60000, 80000) // 1 Min Pause (60-80s)
+                        } else {
+                            randomDelay(8000, 15000) // Profiles ke beech ka aam delay
+                        }
+
                     } catch (e: Exception) {
                         statsErrorsEncountered++
-                        Log.e("InstaTaskBot", "Error processing $profile: ${e.localizedMessage}")
+                        Log.e("InstaTaskBot", "Error on $profile, auto-recovering: ${e.localizedMessage}")
                         logActionToRoom(profile, "ERROR", e.localizedMessage ?: "Unknown Exception", false)
                         sendStatsUpdate()
+                        randomDelay(10000, 15000) // Error par 10-15sec rest le kar resume karega
                     }
                 }
             }
 
-            // Workflow Mode 2: Hashtags
+            // 🔴 WORKFLOW MODE 2: HASHTAGS
             if (isHashtagLikingEnabled && targetHashtags.isNotEmpty()) {
                 for (hashtag in targetHashtags) {
                     if (!coroutineContext.isActive) break
@@ -211,21 +265,57 @@ class BotService : AccessibilityService() {
 
                     try {
                         processHashtagWorkflow(hashtag)
-                        randomDelay(8000, 15000)
+                        processedCounter++
+
+                        // ⏸️ AUTO-PAUSE RULE FOR HASHTAGS
+                        if (processedCounter % 3 == 0) {
+                            Log.d("InstaTaskBot", "⏸️ Auto-Pause: Resting for 1 minute...")
+                            currentSourceProfile = "Resting (1 min)..."
+                            sendStatsUpdate()
+                            randomDelay(60000, 80000) // 1 Min Pause
+                        } else {
+                            randomDelay(8000, 15000)
+                        }
+
                     } catch (e: Exception) {
                         statsErrorsEncountered++
-                        Log.e("InstaTaskBot", "Error processing hashtag #$hashtag: ${e.localizedMessage}")
+                        Log.e("InstaTaskBot", "Error on hashtag #$hashtag: ${e.localizedMessage}")
                         sendStatsUpdate()
+                        randomDelay(10000, 15000)
                     }
                 }
             }
 
-            Log.d("InstaTaskBot", "Workflow finished.")
-            stopBot()
+            // Jab poori target list complete ho jaye tou 2 minutes cycle break le kar RESTART karega
+            Log.d("InstaTaskBot", "🔄 Full cycle finished. Resting 2 mins before starting next cycle...")
+            currentSourceProfile = "Cycle Break (2 mins)..."
+            sendStatsUpdate()
+            randomDelay(120000, 150000) // 2 Min Cycle Break
         }
     }
 
+    /**
+     * Watchdog Engine: Direct Keep-Alive Check (Har 2 minute baad verify karta ha ke bot active hai)
+     */
+    private fun startWatchdog() {
+        watchdogJob?.cancel()
+        watchdogJob = serviceScope.launch {
+            while (isActive) {
+                delay(120000) // Check every 2 minutes
+                if (botJob == null || botJob?.isActive == false) {
+                    Log.w("InstaTaskBot", "Watchdog detected stopped bot! Auto-restarting engine...")
+                    startBot()
+                }
+            }
+        }
+    }
+
+    /**
+     * Bot Engine ko Completely Stop & Cleanup karna
+     */
     private fun stopBot() {
+        watchdogJob?.cancel()
+        watchdogJob = null
         botJob?.cancel()
         botJob = null
         wakeLock?.let { if (it.isHeld) it.release() }
@@ -237,7 +327,7 @@ class BotService : AccessibilityService() {
         sendStatsUpdate()
     }
 
-    // --- HASHTAG WORKFLOW ---
+    // --- HASHTAG WORKFLOW ENGINE ---
     private suspend fun processHashtagWorkflow(tag: String) {
         currentState = BotState.NAVIGATING
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse("instagram://tag?name=$tag")).apply {
@@ -268,7 +358,7 @@ class BotService : AccessibilityService() {
         safeGoBack()
     }
 
-    // --- PROFILE WORKFLOW ---
+    // --- PROFILE WORKFLOW ENGINE ---
     private suspend fun processTargetProfile(username: String) {
         currentState = BotState.NAVIGATING
         Log.d("InstaTaskBot", "Navigating to target source profile: $username")
@@ -329,7 +419,7 @@ class BotService : AccessibilityService() {
             }
 
             if (checkAndHandlePopup()) {
-                Log.d("InstaTaskBot", "⚠️ Popup detected! Resting safely for 30-40 seconds...")
+                Log.d("InstaTaskBot", "⚠️ Popup detected! Resting safely for 35-40 seconds...")
                 randomDelay(35000, 42000)
                 safeGoBack()
                 continue
@@ -603,6 +693,8 @@ class BotService : AccessibilityService() {
             randomDelay(1500, 2000)
         }
     }
+
+    // --- SAFE HELPER & NODE FINDING METHODS (Try-Catch Protected) ---
 
     private fun isStoryRingPresent(avatarNode: AccessibilityNodeInfo): Boolean {
         return try {
