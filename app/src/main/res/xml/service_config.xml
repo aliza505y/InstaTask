@@ -3,6 +3,7 @@
     android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews"
-    android:canPerformGestures="true"
     android:canRetrieveWindowContent="true"
-    android:notificationTimeout="100" />
+    android:canPerformGestures="true"
+    android:notificationTimeout="300"
+    android:packageNames="com.instagram.android" />
