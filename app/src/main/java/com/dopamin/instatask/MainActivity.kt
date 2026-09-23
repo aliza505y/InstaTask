@@ -1,6 +1,5 @@
 package com.dopamin.instatask
 
-import android.R.attr.action
 import android.annotation.SuppressLint
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -10,6 +9,8 @@ import android.os.Bundle
 import android.provider.Settings
 import android.text.TextUtils
 import android.widget.Button
+import android.widget.EditText
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -24,10 +25,18 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnStartBot: Button
     private lateinit var btnStopBot: Button
     private lateinit var btnAccessibility: Button
-    private lateinit var btnClearStats : Button
+    private lateinit var btnClearStats: Button
     private lateinit var tvStatus: TextView
     private lateinit var tvCurrentActivity: TextView
     private lateinit var tvStats: TextView
+
+    // New Configuration Input Views
+    private lateinit var etProfiles: EditText
+    private lateinit var etHashtags: EditText
+    @SuppressLint("UseSwitchCompatOrMaterialCode")
+    private lateinit var switchProfile: Switch
+    @SuppressLint("UseSwitchCompatOrMaterialCode")
+    private lateinit var switchHashtag: Switch
 
     private lateinit var database: AppDatabase
 
@@ -60,6 +69,7 @@ class MainActivity : AppCompatActivity() {
 
         database = AppDatabase.getDatabase(this)
 
+        // Binding UI Views
         btnStartBot = findViewById(R.id.btnStartBot)
         btnStopBot = findViewById(R.id.btnStopBot)
         btnClearStats = findViewById(R.id.btnClearStats)
@@ -68,6 +78,13 @@ class MainActivity : AppCompatActivity() {
         tvCurrentActivity = findViewById(R.id.tvCurrentActivity)
         tvStats = findViewById(R.id.tvStats)
 
+        etProfiles = findViewById(R.id.etTargetProfiles)
+        etHashtags = findViewById(R.id.etTargetHashtags)
+        switchProfile = findViewById(R.id.switchProfileLiking)
+        switchHashtag = findViewById(R.id.switchHashtagLiking)
+
+        // Saved Preferences Load Karein
+        loadSavedPreferences()
 
         btnAccessibility.setOnClickListener {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -82,9 +99,11 @@ class MainActivity : AppCompatActivity() {
 
         btnStartBot.setOnClickListener {
             if (isAccessibilityServiceEnabled(this, BotService::class.java)) {
+                // Settings pehle save hongi, phir Bot chala ga
+                savePreferences()
                 startBotService("START_BOT")
                 tvStatus.text = "Status: Bot running..."
-                Toast.makeText(this, "Bot started", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Settings Saved & Bot Started!", Toast.LENGTH_SHORT).show()
             } else {
                 Toast.makeText(this, "Please enable Accessibility Service first!", Toast.LENGTH_LONG).show()
             }
@@ -100,6 +119,25 @@ class MainActivity : AppCompatActivity() {
         loadStatsFromDatabase()
     }
 
+    private fun loadSavedPreferences() {
+        val prefs = getSharedPreferences("InstaTaskPrefs", Context.MODE_PRIVATE)
+        etProfiles.setText(prefs.getString("SOURCE_PROFILES", ""))
+        etHashtags.setText(prefs.getString("TARGET_HASHTAGS", ""))
+        switchProfile.isChecked = prefs.getBoolean("ENABLE_PROFILE_LIKING", true)
+        switchHashtag.isChecked = prefs.getBoolean("ENABLE_HASHTAG_LIKING", false)
+    }
+
+    private fun savePreferences() {
+        val prefs = getSharedPreferences("InstaTaskPrefs", Context.MODE_PRIVATE)
+        prefs.edit().apply {
+            putString("SOURCE_PROFILES", etProfiles.text.toString())
+            putString("TARGET_HASHTAGS", etHashtags.text.toString())
+            putBoolean("ENABLE_PROFILE_LIKING", switchProfile.isChecked)
+            putBoolean("ENABLE_HASHTAG_LIKING", switchHashtag.isChecked)
+            apply()
+        }
+    }
+
     private fun startBotService(actionString: String) {
         val intent = Intent(this, BotService::class.java).apply {
             action = actionString
@@ -109,7 +147,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadStatsFromDatabase() {
         lifecycleScope.launch(Dispatchers.IO) {
-            val totalProcessed = database.botDao().getProcessedCount()
             val totalLikes = database.botDao().getTotalLikesCount()
             val totalComments = database.botDao().getTotalCommentsCount()
             val totalStories = database.botDao().getTotalStoriesCount()
@@ -118,7 +155,6 @@ class MainActivity : AppCompatActivity() {
             val totalSkipped = database.botDao().getTotalProfilesSkipped()
             val totalErrors = database.botDao().getTotalErrors()
             withContext(Dispatchers.Main) {
-                // Initial load from Room Database
                 updateStatsTextView(
                     scanned = totalScanned,
                     followed = totalFollowed,
@@ -167,7 +203,11 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
-        unregisterReceiver(statsReceiver)
+        try {
+            unregisterReceiver(statsReceiver)
+        } catch (e: Exception) {
+            // Safe unregister
+        }
     }
 
     private fun isAccessibilityServiceEnabled(context: Context, service: Class<*>): Boolean {
